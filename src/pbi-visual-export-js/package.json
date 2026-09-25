@@ -1,0 +1,45 @@
+{
+  "name": "pbi-visual-export",
+  "version": "0.1.0",
+  "description": "Browser client for the PbiVisualExport ASP.NET Core module: gathers an embedded Power BI visual's fields, filters, slicers and sort and streams an unlimited CSV export.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "main": "dist/pbi-visual-export.mjs",
+  "module": "dist/pbi-visual-export.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/pbi-visual-export.mjs",
+      "default": "./dist/pbi-visual-export.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -p tsconfig.check.json && tsc && node build.mjs",
+    "typecheck": "tsc -p tsconfig.check.json",
+    "test": "node build.mjs && node --test --test-timeout=15000 \"test/*.test.mjs\""
+  },
+  "peerDependencies": {
+    "powerbi-client": ">=2.22.0",
+    "powerbi-report-authoring": ">=1.1.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "powerbi-client": "^2.25.0",
+    "powerbi-report-authoring": "^3.0.0",
+    "typescript": "^5.9.3"
+  },
+  "peerDependenciesMeta": {
+    "powerbi-client": {
+      "optional": true
+    },
+    "powerbi-report-authoring": {
+      "optional": true
+    }
+  }
+}
