@@ -1,0 +1,127 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            experimental: false
+          # The ADOMD.NET / TOM packages are Windows-first; Linux is informational.
+          - os: ubuntu-latest
+            experimental: true
+    continue-on-error: ${{ matrix.experimental }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: src/pbi-visual-export-js/package-lock.json
+
+      - name: Version
+        id: version
+        run: |
+          $pkg = (Get-Content src/pbi-visual-export-js/package.json -Raw | ConvertFrom-Json).version
+          $prefix = ([xml](Get-Content src/PbiVisualExport/PbiVisualExport.csproj -Raw)).Project.PropertyGroup.VersionPrefix | Where-Object { $_ } | Select-Object -First 1
+          if ($pkg -ne $prefix) { throw "package.json version $pkg != csproj VersionPrefix $prefix" }
+          if ($env:GITHUB_REF -like 'refs/tags/v*') {
+            $version = $env:GITHUB_REF_NAME.Substring(1)
+            if (-not $version.StartsWith($prefix)) { throw "Tag $env:GITHUB_REF_NAME doesn't match version $prefix" }
+          } else {
+            $version = "$prefix-ci.$env:GITHUB_RUN_NUMBER"
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "Version: $version"
+
+      # The .NET library embeds the client bundles, so they're committed; the build must reproduce them.
+      - name: Build and test the JS client
+        working-directory: src/pbi-visual-export-js
+        run: |
+          npm ci
+          npm run build
+          node --test --test-timeout=15000 "test/*.test.mjs"
+
+      - name: Check the embedded client bundles are up to date
+        run: |
+          git diff --exit-code --stat -- src/PbiVisualExport/Client
+          if ($LASTEXITCODE -ne 0) { throw "src/PbiVisualExport/Client is stale: run 'npm run build' in src/pbi-visual-export-js and commit." }
+
+      - name: Build
+        run: dotnet build PbiVisualExport.sln -c Release -p:Version=${{ steps.version.outputs.version }} -p:ContinuousIntegrationBuild=true
+
+      - name: Test (net8.0 + net10.0)
+        run: dotnet test tests/PbiVisualExport.Tests -c Release --no-build --logger "trx;LogFilePrefix=results" --results-directory TestResults
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.os }}
+          path: TestResults
+          if-no-files-found: ignore
+
+      - name: Pack
+        if: matrix.os == 'windows-latest'
+        run: dotnet pack src/PbiVisualExport -c Release --no-build -p:Version=${{ steps.version.outputs.version }} -o artifacts
+
+      - name: Upload package
+        if: matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: nupkg
+          path: artifacts/*.nupkg
+
+  publish:
+    name: publish to GitHub Packages
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: nupkg
+          path: artifacts
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Push
+        run: >
+          dotnet nuget push "artifacts/*.nupkg"
+          --source "https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json"
+          --api-key "${{ secrets.GITHUB_TOKEN }}"
+          --skip-duplicate

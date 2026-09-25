@@ -11,6 +11,13 @@
     <NoWarn>$(NoWarn);CS1591;CS1573</NoWarn>
 
     <PackageId>PbiVisualExport</PackageId>
+    <!-- CI appends -ci.{run} (VersionSuffix) or sets Version from a v* tag; keep in step with src/pbi-visual-export-js/package.json. -->
+    <VersionPrefix>0.1.0</VersionPrefix>
+    <Authors>dbrownems</Authors>
+    <Copyright>Copyright (c) Microsoft Corporation.</Copyright>
+    <RepositoryUrl>https://github.com/dbrownems/PbiVisualExport</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageProjectUrl>https://github.com/dbrownems/PbiVisualExport</PackageProjectUrl>
     <Description>Streams an arbitrarily large CSV export of an embedded Power BI report visual: an ASP.NET Core module (DI registration + minimal-API endpoints) that turns the visual's configuration into DAX and runs it over the XMLA endpoint. Ships its browser client at {prefix}/client.js.</Description>
     <PackageTags>powerbi;fabric;xmla;dax;csv;export;embedded</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
