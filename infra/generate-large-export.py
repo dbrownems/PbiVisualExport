@@ -15,8 +15,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 ROWS = 2_000_000
-# Deployed LargeExportTest semantic model the report binds to (definition.pbir byConnection).
-DATASET_ID = "00000000-0000-0000-0000-000000000018"
+# The report binds to the LargeExportTest model by id; deploy-model.ps1 resolves this
+# token by display name in the target workspace at deploy time (definition.pbir byConnection).
+DATASET_ID = "{{SemanticModelId:LargeExportTest}}"
 SCHEMA = "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/"
 CURRENCY_FMT = r"\$#,0.00;(\$#,0.00);\$#,0.00"
 ORDER_DATE = "DATE(2020, 1, 1) + MOD([@h1], 2192)"

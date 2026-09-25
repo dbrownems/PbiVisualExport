@@ -6,7 +6,7 @@
       "connectionString": null,
       "pbiServiceModelId": null,
       "pbiModelVirtualServerName": "sobe_wowvirtualserver",
-      "pbiModelDatabaseName": "00000000-0000-0000-0000-000000000005",
+      "pbiModelDatabaseName": "{{SemanticModelId:DqParamReport}}",
       "name": "EntityDataSource",
       "connectionType": "pbiServiceXmlaStyleLive"
     }

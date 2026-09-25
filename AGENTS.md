@@ -46,7 +46,9 @@ user secrets (Development only; the local secret store) < environment variables
   - `Auth/XmlaTokenProvider.cs` — XMLA credential (`Shared` for SP, device code in dev).
   - `Controllers/` — `/embedinfo/reports`, `/embedinfo/getembedinfo?reportId=`, `/export/csv`, `/export/xmla-auth`.
   - `wwwroot/js/app.js` + `Views/Home/Index.cshtml` — front end + debug panel.
-- `infra/` — Fabric TMDL/PBIR authoring; `deploy-model.ps1` deploys models/reports;
+- `infra/` — Fabric TMDL/PBIR authoring; `deploy-model.ps1` deploys models/reports
+  (workspace from the settings cascade via `settings.ps1`; resolves
+  `{{SemanticModelId:…}}` / `{{WarehouseServer:…}}` tokens at deploy time; supports `-WhatIf`);
   `generate-large-export.py` generates the 2M-row test model + report;
   `compare-exports.py` diffs API vs native exports.
   Test reports are modern enhanced PBIR — see `infra/reports/README.md`.
@@ -85,7 +87,8 @@ excludes these:
 
 ## ⚠️ Before making this repo public
 
-App and tool config no longer commit environment IDs. `infra/` still has
-workspace/dataset/Warehouse IDs, and the initial commit's history has the old
-ones. See "Before making this repo public" in
+App, tool and infra config no longer commit environment IDs. `infra/` resolves
+them at deploy time, via the settings cascade and `{{SemanticModelId:…}}` /
+`{{WarehouseServer:…}}` tokens. Only git history still has the old ones. See
+"Before making this repo public" in
 [`.github/copilot-instructions.md`](.github/copilot-instructions.md).

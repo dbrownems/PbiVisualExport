@@ -461,11 +461,37 @@ _sample/                         Upstream MS "Embed for your customers/AppOwnsDa
 ## Infra & Fabric authoring (`infra/`)
 
 - **`deploy-model.ps1`** deploys a TMDL/PBIR folder as a Fabric item:
-  `-Folder <dir> -DisplayName <name> -Kind semanticModels|reports [-Workspace <id>]`.
+  `-Folder <dir> -DisplayName <name> -Kind semanticModels|reports [-Workspace <id>] [-WhatIf]`.
   It base64-encodes every part, POSTs `createItemWithDefinition`, polls the LRO,
   and prints the new item id. With `-ItemId <id>` it instead updates that item in
   place (`updateDefinition`); add `-UpdateMetadata` to also apply the `.platform`
   (e.g. a changed description). Uses `az account get-access-token --resource https://api.fabric.microsoft.com`.
+  - **Workspace** defaults to the `PowerBI:WorkspaceId` setting through the same
+    cascade as the app (see *Configuration*), via **`infra/settings.ps1`**: env var
+    `PowerBI__WorkspaceId` > user secrets > web `appsettings.json`. Pass
+    `-Workspace` to override it. The script prints which workspace it used.
+  - **Deploy-time tokens** keep environment IDs out of `infra/`. Text parts are
+    scanned; tokens are resolved **by display name in the target workspace** and
+    substituted in the upload payload only. Files on disk are never rewritten.
+    Unresolved, missing or ambiguous names stop the deploy before the POST. `-WhatIf`
+    resolves and prints every token, then skips the POST.
+
+    | Token | Resolves to | Used in |
+    |---|---|---|
+    | `{{SemanticModelId:<name>}}` | the semantic model's id (`/semanticModels`) | every `reports/*/definition.pbir` `byConnection.pbiModelDatabaseName` |
+    | `{{WarehouseServer:<name>}}` | the Warehouse's `properties.connectionString` host (`/warehouses`) | `models/DqParamTest/definition/expressions.tmdl` (`WhServer`) |
+
+    So a **fresh workspace** needs no file edits. Create the Warehouse (seed it with
+    `tools/WhSql`), deploy the models, then the reports. The only thing that must
+    line up is the model's display name. **Gotcha:** the `models/DqParamTest`
+    folder's `.platform` says `DqParamTest`, but the deployed model is named
+    **`DqParamReport`**. That's why `DqParamReport`'s pbir references
+    `{{SemanticModelId:DqParamReport}}`. Keep the two consistent if you redeploy
+    with a new name.
+  - `infra/settings.ps1` is dot-sourceable from any script: `Get-PbiSetting
+    'PowerBI:WorkspaceId' -Required`, or `Resolve-PbiSetting <key>` for
+    `{Value, Source}`. It is Windows PowerShell 5.1-compatible, like the rest of
+    `infra/`.
 - **Test artifacts** (hand-authored to exercise the exporter). Reports are
   **modern enhanced PBIR** with documented `.platform` descriptions — see
   [`infra/reports/README.md`](../infra/reports/README.md) for the full report set,
@@ -665,13 +691,13 @@ The repo is a **private** GitHub repo, `dbrownems/PbiVisualExport`. The root
 
 ## ⚠️ Before making this repo public
 
-1. **App and tool config: done.** `appsettings.json` and `tools/XmlaSmoke` no
-   longer carry environment IDs; they come from user secrets or env vars (see
-   *Configuration*).
-2. **`infra/`** still has the workspace default in `deploy-model.ps1`, dataset IDs
-   in the `infra/reports/*/definition.pbir` bindings, and the Warehouse host in
-   `infra/models/DqParamTest`.
-3. **Git history**: the initial commit (`aa72a1d`) contains the old IDs. They're
-   IDs, not secrets. Squash or rewrite only if that matters, and only on explicit
-   request.
-4. **`LICENSE`** (MIT, Copyright (c) Microsoft Corporation) is already present.
+1. **App, tool and infra config: done.** `appsettings.json` and
+   `tools/XmlaSmoke` read environment IDs from user secrets or env vars (see
+   *Configuration*). `infra/` resolves them at deploy time: the workspace comes
+   from the same cascade, and model ids and the Warehouse host come from
+   `{{…}}` tokens (see *Infra*). Only public client IDs (Azure CLI, Analysis
+   Services) and PBIR lineage/sample GUIDs remain.
+2. **Git history**: the initial commit (`aa72a1d`) and later ones before the
+   settings refactor contain the old IDs. They're IDs, not secrets. Squash or
+   rewrite only if that matters, and only on explicit request.
+3. **`LICENSE`** (MIT, Copyright (c) Microsoft Corporation) is already present.

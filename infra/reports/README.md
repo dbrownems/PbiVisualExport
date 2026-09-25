@@ -7,7 +7,9 @@ never a single legacy `report.json` blob — so report design is **inspectable**
 (see the *Report-level measures* note below).
 
 Deploy or update any of these with `infra/deploy-model.ps1 -Kind reports`, which
-base64-encodes every part under the folder. To **replace an existing report in
+base64-encodes every part under the folder. The target workspace comes from the
+`PowerBI:WorkspaceId` setting (user secrets or `PowerBI__WorkspaceId`), unless you
+pass `-Workspace`. To **replace an existing report in
 place** (keeping its id so embedding keeps working) pass `-ItemId <id>`
 (`updateDefinition`); add `-UpdateMetadata` to also apply the `.platform`
 description (`updateDefinition?updateMetadata=true`). Without `-ItemId` it creates
@@ -15,17 +17,24 @@ a new report.
 
 ## Reports
 
-| Folder | Bound model | Format | Exercises | Visual types |
+| Folder | Bound model (display name) | Format | Exercises | Visual types |
 |---|---|---|---|---|
-| `StoreSales` | `StoreSales` (`ba3d016a-…`) | Enhanced PBIR | Variety of visuals + **report-level measures** | tableEx, matrix (`pivotTable`), clusteredColumnChart, clusteredBarChart, lineChart, donutChart, card, slicer |
-| `FieldParamReport` | `FieldParamTest` (`cbfd0189-…`) | Enhanced PBIR | **Field parameter** — a slicer selects which fields `fpTable` projects; `table1` shows the parameter column itself | tableEx, slicer |
-| `DqParamReport` | `DqParamTest` (`2272685b-…`) | Enhanced PBIR | **Dynamic M query parameter** over a DirectQuery model | tableEx, slicer |
-| `LargeExportReport` | `LargeExportTest` (`13bf1c3f-…`) | Enhanced PBIR | **2M rows × 31 columns**, every data type + many format strings; native vs API export comparison | tableEx, matrix (`pivotTable`), card, slicer |
+| `StoreSales` | `StoreSales` | Enhanced PBIR | Variety of visuals + **report-level measures** | tableEx, matrix (`pivotTable`), clusteredColumnChart, clusteredBarChart, lineChart, donutChart, card, slicer |
+| `FieldParamReport` | `FieldParamTest` | Enhanced PBIR | **Field parameter** — a slicer selects which fields `fpTable` projects; `table1` shows the parameter column itself | tableEx, slicer |
+| `DqParamReport` | `DqParamReport` (deployed from `models/DqParamTest`) | Enhanced PBIR | **Dynamic M query parameter** over a DirectQuery model | tableEx, slicer |
+| `LargeExportReport` | `LargeExportTest` | Enhanced PBIR | **2M rows × 31 columns**, every data type + many format strings; native vs API export comparison | tableEx, matrix (`pivotTable`), card, slicer |
 
 > The dataset a report binds to is set in its `definition.pbir`
-> (`datasetReference.byConnection.pbiModelDatabaseName`). If a model is dropped and
-> recreated its id changes — update the `.pbir` and redeploy, or the service
-> returns `PowerBIEntityNotFound` on `updateDefinition`.
+> (`datasetReference.byConnection.pbiModelDatabaseName`). That value is a
+> **deploy-time token**, `{{SemanticModelId:<model display name>}}`, not an id.
+> `deploy-model.ps1` looks the name up in the target workspace and substitutes the
+> id in the upload, so a dropped-and-recreated model (new id) or a fresh workspace
+> needs no file edits. Just deploy the model before its report. Unknown or
+> duplicate names fail the deploy up front. Otherwise the service returns
+> `PowerBIEntityNotFound` on `updateDefinition`. Use `-WhatIf` to see the
+> resolved ids without deploying. The `DqParamTest` model folder deploys as
+> **`DqParamReport`** (its `.platform` name differs), which is why that report's
+> token names `DqParamReport`.
 
 Each report's `.platform` carries a `metadata.displayName` **and** a
 `metadata.description`; the description round-trips to the workspace when you

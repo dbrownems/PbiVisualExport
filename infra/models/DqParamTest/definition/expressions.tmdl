@@ -3,7 +3,7 @@ expression RegionParam = "East" meta [IsParameterQuery=true, Type="Text", IsPara
 
 	annotation PBI_ResultType = Text
 
-expression WhServer = "<warehouse-host>.datawarehouse.fabric.microsoft.com" meta [IsParameterQuery=true, Type="Text", IsParameterQueryRequired=true]
+expression WhServer = "{{WarehouseServer:ExportTestWH}}" meta [IsParameterQuery=true, Type="Text", IsParameterQueryRequired=true]
 	lineageTag: 55555555-0000-0000-0000-000000000002
 
 	annotation PBI_ResultType = Text
