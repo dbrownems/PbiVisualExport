@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>PbiVisualExport</RootNamespace>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!-- CS1591: undocumented members; CS1573: partially documented parameters (internal types). -->
+    <NoWarn>$(NoWarn);CS1591;CS1573</NoWarn>
+
+    <PackageId>PbiVisualExport</PackageId>
+    <Description>Streams an arbitrarily large CSV export of an embedded Power BI report visual: an ASP.NET Core module (DI registration + minimal-API endpoints) that turns the visual's configuration into DAX and runs it over the XMLA endpoint. Ships its browser client at {prefix}/client.js.</Description>
+    <PackageTags>powerbi;fabric;xmla;dax;csv;export;embedded</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <PackageReference Include="Azure.Identity" Version="1.14.2" />
+    <!-- x64-only packages (ADOMD.NET for the XMLA data path, TOM for model metadata). -->
+    <PackageReference Include="Microsoft.AnalysisServices.AdomdClient.NetCore.retail.amd64" Version="19.84.1" />
+    <PackageReference Include="Microsoft.AnalysisServices.NetCore.retail.amd64" Version="19.84.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Microsoft.Extensions.Logging" />
+    <InternalsVisibleTo Include="PbiVisualExport.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Browser client, built from src/pbi-visual-export-js (npm run build) and served at {prefix}/client.js / client.mjs. -->
+    <EmbeddedResource Include="Client\pbi-visual-export.js" LogicalName="PbiVisualExport.Client.pbi-visual-export.js" Condition="Exists('Client\pbi-visual-export.js')" />
+    <EmbeddedResource Include="Client\pbi-visual-export.mjs" LogicalName="PbiVisualExport.Client.pbi-visual-export.mjs" Condition="Exists('Client\pbi-visual-export.mjs')" />
+    <None Include="README.md" Pack="true" PackagePath="\" Condition="Exists('README.md')" />
+  </ItemGroup>
+
+</Project>

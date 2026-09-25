@@ -5,6 +5,13 @@
 > file named for the task in the **Task → file map** below. Keep changes surgical
 > and match existing patterns.
 
+> ⚠️ **Being updated for the module split.** The code is now a library
+> (`src/PbiVisualExport`) plus a sample host (`samples/PbiVisualExport.SampleHost`).
+> Endpoints moved from `/export/*` to `{prefix}/*` (sample: `/pbi-export`), and
+> `AzureAd:*` config moved to `PbiVisualExport:Credential:*`. Where this file
+> disagrees with [`AGENTS.md`](../AGENTS.md), trust `AGENTS.md`. The export
+> pipeline, DAX, TOM and PBIR sections are still accurate.
+
 ## What this sample is
 
 A web service that exports a **selected Power BI visual to CSV**, bypassing the

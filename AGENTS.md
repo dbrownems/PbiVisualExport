@@ -17,34 +17,56 @@ endpoint** (ADOMD.NET — no paging, no row caps), and streams the rows as CSV.
 ## Run it
 
 ```pwsh
-az login                                   # default auth mode is AzureCli (dev "super user")
-dotnet user-secrets set PowerBI:WorkspaceId <workspace-guid> --project src/PbiVisualExport.Web  # once
-dotnet run --project src/PbiVisualExport.Web   # launchSettings: Development, http://localhost:5099
+az login                                   # default credential mode is AzureCli (dev "super user")
+$p = 'samples/PbiVisualExport.SampleHost'
+dotnet user-secrets set PowerBI:WorkspaceId <workspace-guid> --project $p   # once
+dotnet run --project $p                    # launchSettings: Development, http://localhost:5099
+dotnet build PbiVisualExport.sln           # library (net8.0 + net10.0) + sample
 ```
 
-Requires the **.NET 10 SDK**. There's no app-level `.sln` (the one under `_sample/`
-is the upstream clone, not this app). In dev mode the first export triggers a
-one-time **XMLA device-code sign-in** (XMLA rejects Azure CLI tokens); the UI
-shows the code.
+Requires the **.NET 10 SDK** (the library also targets net8.0). In dev mode the
+first export triggers a one-time **XMLA device-code sign-in** (XMLA rejects Azure
+CLI tokens); the UI shows the code.
 
 **Settings cascade** (later wins): `appsettings.json` (committed, IDs empty) <
 user secrets (Development only; the local secret store) < environment variables
-(deployed, e.g. `PowerBI__WorkspaceId`, `AzureAd__AuthenticationMode=ServicePrincipal`)
-< command line. Never commit environment IDs. See "Configuration" in
-[`.github/copilot-instructions.md`](.github/copilot-instructions.md).
+(deployed, e.g. `PowerBI__WorkspaceId`, `PbiVisualExport__Credential__Mode=ServicePrincipal`)
+< command line. Never commit environment IDs. Module settings live under
+`PbiVisualExport` (`PbiVisualExportOptions`); the sample's own embed settings
+under `PowerBI`.
 
 ## Layout (essentials)
 
-- `src/PbiVisualExport.Web/` — the app.
+The repo ships a **module**: a .NET class library (NuGet package) that a host
+ASP.NET Core app adds with `services.AddPbiVisualExport(config)` +
+`app.MapPbiVisualExport("/pbi-export")`, plus a JS client bundle (embedded in the
+library and served at `{prefix}/client.js`). The sample host shows the wiring.
+
+- `PbiVisualExport.sln` — library + sample.
+- `src/PbiVisualExport/` — the library (multi-targets net8.0/net10.0).
+  - `PbiVisualExportServiceCollectionExtensions.cs` — DI (`AddPbiVisualExport`,
+    builder: `UseCredential`, `AddAuthorizer`, `AddEffectiveIdentity`, `AddAuditSink`) + options validation.
+  - `ExportEndpoints.cs` — `MapPbiVisualExport` route group (`csv`, `prepare`,
+    `download/{ticket}`, `download/{ticket}/status`, `xmla-auth`, `bench`, `client.js`).
+  - `Extensibility.cs` — public seams (authorizer, effective identity, audit sink).
+  - `PbiVisualExportOptions.cs`, `Models.cs` — options + request/response contract.
+  - `Services/ExportHandler.cs` — endpoint logic (streaming, tickets, errors, audit).
+  - `Services/ExportRequestResolver.cs` — validates a request (workspace allow-list,
+    ID/name agreement, authorizers) before any data is read.
+  - `Services/DownloadTickets.cs` — one-time download tickets + concurrency limiter.
   - `Services/DaxQueryBuilder.cs` — request + TOM → single DAX query (the core logic).
   - `Services/SemanticModelMetadataService.cs` — Fabric `getDefinition(TMSL)` → TOM.
   - `Services/MetadataCache.cs` — in-memory + single-flight + on-disk TOM cache (`MetadataCache` config).
   - `Services/CsvExportService.cs` — orchestrates; streams the XMLA reader to CSV.
   - `Services/XmlaConnectionFactory.cs` — ADOMD.NET connections (XMLA takes **names**, not IDs).
-  - `Services/PowerBiCatalog.cs` — cached ID → name lookups used to validate requests.
+  - `Services/ReportDefinitionService.cs` — PBIR report definition (report measures).
+  - `Services/PowerBiCatalog.cs` — cached ID → name lookups (REST, no SDK dependency).
   - `Auth/PbiTokenProvider.cs` — one credential, PBI vs Fabric token audiences.
   - `Auth/XmlaTokenProvider.cs` — XMLA credential (`Shared` for SP, device code in dev).
-  - `Controllers/` — `/embedinfo/reports`, `/embedinfo/getembedinfo?reportId=`, `/export/csv`, `/export/xmla-auth`.
+- `samples/PbiVisualExport.SampleHost/` — reference host (embedding is the host's job).
+  - `Program.cs` — the wiring; note `UseRouting()` → `UseAuthorization()` order.
+  - `Services/PbiEmbedService.cs`, `Controllers/EmbedInfoController.cs` —
+    `/embedinfo/reports`, `/embedinfo/getembedinfo?reportId=` (embed tokens).
   - `wwwroot/js/app.js` + `Views/Home/Index.cshtml` — front end + debug panel.
 - `infra/` — Fabric TMDL/PBIR authoring; `deploy-model.ps1` deploys models/reports
   (workspace from the settings cascade via `settings.ps1`; resolves
@@ -61,13 +83,16 @@ user secrets (Development only; the local secret store) < environment variables
   for embedding, the catalog and XMLA; Fabric (`api.fabric.microsoft.com`) for
   `getDefinition`. Use `PbiTokenProvider.GetPowerBiTokenAsync` / `GetFabricTokenAsync`.
 - **Export requests carry IDs *and* names** (workspace, dataset, report): metadata
-  is fetched by ID, data by name over XMLA. `ExportController` validates that they
-  agree — keep that check when changing the contract.
+  is fetched by ID, data by name over XMLA. `ExportRequestResolver` fills missing
+  names and validates that they agree — keep that check when changing the contract.
+- **Keep the library's public surface small**: implementation types are
+  `internal`; hosts use the DI/endpoint extensions, options and `Extensibility.cs`
+  seams. Bump `ExportHandler.ContractVersion` on breaking wire changes.
 - **Keep changes surgical** and match existing style: `sealed` types, records for
-  DTOs, nullable on, strongly-typed `IOptions<T>` config (add to `Options/Options.cs`).
+  DTOs, nullable on, strongly-typed options (add to `PbiVisualExportOptions.cs`).
 - **Don't** enable `InvariantGlobalization` — DAX `FORMAT()`/CSV rely on culture.
-- Register services in `Program.cs` (singletons for metadata/token/builder; scoped
-  for per-request services).
+- Register library services in `AddPbiVisualExport` (singletons for
+  metadata/token/builder; scoped for per-request services), not in the sample.
 - Validate real changes by running the app and exporting a visual (compare with the
   **Native export** button / `infra/compare-exports.py`) — don't just eyeball
   generated DAX. For type/format checks ~2,000 rows is enough.

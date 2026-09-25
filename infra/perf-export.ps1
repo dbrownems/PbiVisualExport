@@ -1,14 +1,14 @@
 <#
 .SYNOPSIS
-Perf test for large exports: POST /export/csv against a read-only pass over the same XMLA
-query (POST /export/bench), sampling the server process's memory and CPU throughout.
+Perf test for large exports: POST /pbi-export/csv against a read-only pass over the same XMLA
+query (POST /pbi-export/bench), sampling the server process's memory and CPU throughout.
 
 .DESCRIPTION
-Starts the Release build of the web app on -Port with Export:EnableBenchmark=true (builds
+Starts the Release build of the web app on -Port with PbiVisualExport:Export:EnableBenchmark=true (builds
 it first unless -NoBuild), warms it up, then for each repeat x row count x format runs:
 
-  read    POST /export/bench  executes the export's DAX over XMLA, reads every value, writes nothing
-  export  POST /export/csv    the real export, streamed to a file by curl
+  read    POST /pbi-export/bench  executes the export's DAX over XMLA, reads every value, writes nothing
+  export  POST /pbi-export/csv    the real export, streamed to a file by curl
 
 The pair is interleaved so capacity/network drift affects both equally. A row count N is
 applied as an advanced filter <RowIdTable>[<RowIdColumn>] <= N (Orders[Row Id] in the
@@ -53,8 +53,8 @@ $Formats = Split-List $Formats
 $Modes = Split-List $Modes
 if ($Formats | Where-Object { $_ -notin 'formatted', 'raw' }) { throw "-Formats: use formatted and/or raw." }
 if ($Modes | Where-Object { $_ -notin 'read', 'export' }) { throw "-Modes: use read and/or export." }
-$proj = (Resolve-Path (Join-Path $PSScriptRoot '..\src\PbiVisualExport.Web')).Path
-$exe = Join-Path $proj 'bin\Release\net10.0\PbiVisualExport.Web.exe'
+$proj = (Resolve-Path (Join-Path $PSScriptRoot '..\samples\PbiVisualExport.SampleHost')).Path
+$exe = Join-Path $proj 'bin\Release\net10.0\PbiVisualExport.SampleHost.exe'
 $base = "http://localhost:$Port"
 New-Item -ItemType Directory -Force $OutDir | Out-Null
 $serverLog = Join-Path $OutDir 'server.log'
@@ -96,7 +96,7 @@ function Get-NewLog([int] $fromLine) {
 # One sampled request. Returns a summary row; the timeline is written to samples-<label>.csv.
 function Invoke-Run([string] $mode, [string] $requestPath, [string] $label, [switch] $Quiet) {
     $isExport = $mode -eq 'export'
-    $url = if ($isExport) { "$base/export/csv" } else { "$base/export/bench" }
+    $url = if ($isExport) { "$base/pbi-export/csv" } else { "$base/pbi-export/bench" }
     $body = Join-Path $OutDir ("out-$label." + $(if ($isExport) { 'csv' } else { 'json' }))
     $curlOut = Join-Path $OutDir "curl-$label.txt"
     Remove-Item $body, $curlOut -ErrorAction SilentlyContinue
@@ -180,12 +180,12 @@ function Invoke-Run([string] $mode, [string] $requestPath, [string] $label, [swi
 }
 
 $savedEnv = @{
-    Export__EnableBenchmark              = $env:Export__EnableBenchmark
-    Logging__LogLevel__PbiVisualExport   = $env:Logging__LogLevel__PbiVisualExport
+    PbiVisualExport__Export__EnableBenchmark = $env:PbiVisualExport__Export__EnableBenchmark
+    Logging__LogLevel__PbiVisualExport       = $env:Logging__LogLevel__PbiVisualExport
 }
 $script:server = $null
 try {
-    $env:Export__EnableBenchmark = 'true'
+    $env:PbiVisualExport__Export__EnableBenchmark = 'true'
     $env:Logging__LogLevel__PbiVisualExport = 'Debug'
     $script:server = Start-Process $exe -ArgumentList "--urls $base --environment Development" -WorkingDirectory $proj -PassThru -NoNewWindow `
         -RedirectStandardOutput $serverLog -RedirectStandardError (Join-Path $OutDir 'server.err.log')

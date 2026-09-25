@@ -3,16 +3,16 @@
 #     . "$PSScriptRoot\settings.ps1"
 #     $ws = Get-PbiSetting 'PowerBI:WorkspaceId' -Required
 #
-# It mirrors the web app's cascade, highest precedence first. Explicit script
+# It mirrors the sample host's cascade, highest precedence first. Explicit script
 # parameters beat all of these; callers only use Get-PbiSetting when a
 # parameter wasn't passed.
 #   1. Environment variable   (PowerBI__WorkspaceId, ':' -> '__')
-#   2. .NET user secrets      (the web project's <UserSecretsId>; dotnet user-secrets set ...)
-#   3. src/PbiVisualExport.Web/appsettings.json (committed; IDs are empty there)
+#   2. .NET user secrets      (the sample host's <UserSecretsId>; dotnet user-secrets set ...)
+#   3. samples/PbiVisualExport.SampleHost/appsettings.json (committed; IDs are empty there)
 # Works in Windows PowerShell 5.1 and PowerShell 7+.
 
 $script:PbiRepoRoot = Split-Path $PSScriptRoot -Parent
-$script:PbiWebProject = Join-Path $script:PbiRepoRoot 'src\PbiVisualExport.Web'
+$script:PbiWebProject = Join-Path $script:PbiRepoRoot 'samples\PbiVisualExport.SampleHost'
 
 function ConvertTo-PbiFlatSettings {
     # Flattens parsed JSON into 'Section:Key' pairs (the .NET configuration key shape).
@@ -77,7 +77,7 @@ function Get-PbiSetting {
     }
     if ($Required) {
         throw ("$Key is not configured. Pass it as a script parameter, or set it once with one of:`n" +
-            "  dotnet user-secrets set $Key <value> --project src/PbiVisualExport.Web`n" +
+            "  dotnet user-secrets set $Key <value> --project samples/PbiVisualExport.SampleHost`n" +
             "  `$env:$($Key -replace ':', '__') = '<value>'")
     }
     return $null

@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>PbiVisualExport.SampleHost</RootNamespace>
+    <InvariantGlobalization>false</InvariantGlobalization>
+    <UserSecretsId>7ad05434-b6db-4caf-8ad0-a97c908c87ae</UserSecretsId>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Embedding (report list + embed token) is the host's job; the module only exports. -->
+    <PackageReference Include="Microsoft.PowerBI.Api" Version="4.22.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\PbiVisualExport\PbiVisualExport.csproj" />
+  </ItemGroup>
+
+</Project>
