@@ -1,0 +1,31 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/1.0.0/schema.json",
+  "name": "donut1",
+  "position": { "x": 16, "y": 352, "z": 2, "width": 620, "height": 336, "tabOrder": 2 },
+  "visual": {
+    "visualType": "donutChart",
+    "query": {
+      "queryState": {
+        "Category": {
+          "projections": [
+            {
+              "field": { "Column": { "Expression": { "SourceRef": { "Entity": "Item" } }, "Property": "Segment" } },
+              "queryRef": "Item.Segment",
+              "nativeQueryRef": "Segment",
+              "active": true
+            }
+          ]
+        },
+        "Y": {
+          "projections": [
+            {
+              "field": { "Measure": { "Expression": { "SourceRef": { "Entity": "Sales" } }, "Property": "TotalSales" } },
+              "queryRef": "Sales.TotalSales",
+              "nativeQueryRef": "TotalSales"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

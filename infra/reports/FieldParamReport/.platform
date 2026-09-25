@@ -1,0 +1,12 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",
+  "metadata": {
+    "type": "Report",
+    "displayName": "FieldParamReport",
+    "description": "Test report exercising a Field Parameter. A slicer selects which fields appear, so the table visual's projected columns change with the selection. Validates that the CSV exporter resolves field-parameter-expanded projections into the correct concrete columns."
+  },
+  "config": {
+    "version": "2.0",
+    "logicalId": "00000000-0000-0000-0000-000000000000"
+  }
+}

@@ -1,0 +1,60 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/1.0.0/schema.json",
+  "name": "rmTable",
+  "position": { "x": 16, "y": 16, "z": 0, "width": 820, "height": 400, "tabOrder": 0 },
+  "visual": {
+    "visualType": "tableEx",
+    "query": {
+      "queryState": {
+        "Values": {
+          "projections": [
+            {
+              "field": { "Column": { "Expression": { "SourceRef": { "Entity": "Store" } }, "Property": "Chain" } },
+              "queryRef": "Store.Chain",
+              "nativeQueryRef": "Chain"
+            },
+            {
+              "field": { "Column": { "Expression": { "SourceRef": { "Entity": "Store" } }, "Property": "Store Type" } },
+              "queryRef": "Store.Store Type",
+              "nativeQueryRef": "Store Type"
+            },
+            {
+              "field": { "Measure": { "Expression": { "SourceRef": { "Entity": "Sales" } }, "Property": "TotalSales" } },
+              "queryRef": "Sales.TotalSales",
+              "nativeQueryRef": "TotalSales"
+            },
+            {
+              "field": { "Measure": { "Expression": { "SourceRef": { "Entity": "Sales" } }, "Property": "Sales per Store" } },
+              "queryRef": "Sales.Sales per Store",
+              "nativeQueryRef": "Sales per Store"
+            },
+            {
+              "field": { "Measure": { "Expression": { "SourceRef": { "Entity": "Sales" } }, "Property": "Sales per Store (K)" } },
+              "queryRef": "Sales.Sales per Store (K)",
+              "nativeQueryRef": "Sales per Store (K)"
+            }
+          ]
+        }
+      },
+      "sortDefinition": {
+        "sort": [
+          {
+            "field": { "Measure": { "Expression": { "SourceRef": { "Entity": "Sales" } }, "Property": "Sales per Store" } },
+            "direction": "Descending"
+          }
+        ],
+        "isDefaultSort": true
+      }
+    },
+    "visualContainerObjects": {
+      "title": [
+        {
+          "properties": {
+            "show": { "expr": { "Literal": { "Value": "true" } } },
+            "text": { "expr": { "Literal": { "Value": "'Report measures by store (sorted by Sales per Store)'" } } }
+          }
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,341 @@
+table Orders
+	lineageTag: 55555555-0000-0000-0000-000000000001
+
+	measure 'Order Count' = COUNTROWS(Orders)
+		formatString: #,0
+		lineageTag: 55555555-0000-0000-0000-000000000100
+
+	measure 'Total Sales' = SUM(Orders[Sales Amount])
+		formatString: \$#,0.00;(\$#,0.00);\$#,0.00
+		lineageTag: 55555555-0000-0000-0000-000000000101
+
+	measure 'Total Quantity' = SUM(Orders[Quantity])
+		formatString: #,0
+		lineageTag: 55555555-0000-0000-0000-000000000102
+
+	measure 'Avg Discount' = AVERAGE(Orders[Discount Pct])
+		formatString: 0.00%
+		lineageTag: 55555555-0000-0000-0000-000000000103
+
+	measure 'Return Rate' = DIVIDE(CALCULATE(COUNTROWS(Orders), Orders[Is Returned] = TRUE()), COUNTROWS(Orders))
+		formatString: 0.0%
+		lineageTag: 55555555-0000-0000-0000-000000000104
+
+	column 'Row Id'
+		dataType: int64
+		formatString: 0
+		lineageTag: 55555555-0000-0000-0000-000000000200
+		summarizeBy: none
+		sourceColumn: [Row Id]
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Order Number'
+		dataType: string
+		lineageTag: 55555555-0000-0000-0000-000000000201
+		summarizeBy: none
+		sourceColumn: [Order Number]
+
+		annotation SummarizationSetBy = Automatic
+
+	column Region
+		dataType: string
+		lineageTag: 55555555-0000-0000-0000-000000000202
+		summarizeBy: none
+		sourceColumn: [Region]
+
+		annotation SummarizationSetBy = Automatic
+
+	column Category
+		dataType: string
+		lineageTag: 55555555-0000-0000-0000-000000000203
+		summarizeBy: none
+		sourceColumn: [Category]
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Product Name'
+		dataType: string
+		lineageTag: 55555555-0000-0000-0000-000000000204
+		summarizeBy: none
+		sourceColumn: [Product Name]
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Customer Name'
+		dataType: string
+		lineageTag: 55555555-0000-0000-0000-000000000205
+		summarizeBy: none
+		sourceColumn: [Customer Name]
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Postal Code'
+		dataType: string
+		lineageTag: 55555555-0000-0000-0000-000000000206
+		summarizeBy: none
+		sourceColumn: [Postal Code]
+
+		annotation SummarizationSetBy = Automatic
+
+	column Quantity
+		dataType: int64
+		formatString: #,0
+		lineageTag: 55555555-0000-0000-0000-000000000207
+		summarizeBy: sum
+		sourceColumn: [Quantity]
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Unit Price'
+		dataType: decimal
+		formatString: \$#,0.00;(\$#,0.00);\$#,0.00
+		lineageTag: 55555555-0000-0000-0000-000000000208
+		summarizeBy: none
+		sourceColumn: [Unit Price]
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Discount Pct'
+		dataType: double
+		formatString: 0.00%
+		lineageTag: 55555555-0000-0000-0000-000000000209
+		summarizeBy: none
+		sourceColumn: [Discount Pct]
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Sales Amount'
+		dataType: decimal
+		formatString: \$#,0.00;(\$#,0.00);\$#,0.00
+		lineageTag: 55555555-0000-0000-0000-000000000210
+		summarizeBy: sum
+		sourceColumn: [Sales Amount]
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Unit Cost'
+		dataType: double
+		formatString: #,0.0000
+		lineageTag: 55555555-0000-0000-0000-000000000211
+		summarizeBy: none
+		sourceColumn: [Unit Cost]
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Margin Ratio'
+		dataType: double
+		formatString: 0.000;-0.000;0
+		lineageTag: 55555555-0000-0000-0000-000000000212
+		summarizeBy: none
+		sourceColumn: [Margin Ratio]
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Weight Kg'
+		dataType: double
+		lineageTag: 55555555-0000-0000-0000-000000000213
+		summarizeBy: none
+		sourceColumn: [Weight Kg]
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Scientific Value'
+		dataType: double
+		formatString: 0.00E+00
+		lineageTag: 55555555-0000-0000-0000-000000000214
+		summarizeBy: none
+		sourceColumn: [Scientific Value]
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Big Integer'
+		dataType: int64
+		lineageTag: 55555555-0000-0000-0000-000000000215
+		summarizeBy: none
+		sourceColumn: [Big Integer]
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Priority Code'
+		dataType: int64
+		formatString: 000000
+		lineageTag: 55555555-0000-0000-0000-000000000216
+		summarizeBy: none
+		sourceColumn: [Priority Code]
+
+		annotation SummarizationSetBy = Automatic
+
+	column Rating
+		dataType: double
+		formatString: 0.0
+		lineageTag: 55555555-0000-0000-0000-000000000217
+		summarizeBy: none
+		sourceColumn: [Rating]
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Tax Rate'
+		dataType: decimal
+		formatString: 0.0%
+		lineageTag: 55555555-0000-0000-0000-000000000218
+		summarizeBy: none
+		sourceColumn: [Tax Rate]
+
+		annotation SummarizationSetBy = Automatic
+
+	column Temperature
+		dataType: double
+		formatString: #,0.0" °C"
+		lineageTag: 55555555-0000-0000-0000-000000000219
+		summarizeBy: none
+		sourceColumn: [Temperature]
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Contract Value'
+		dataType: decimal
+		formatString: \$#,0
+		lineageTag: 55555555-0000-0000-0000-000000000220
+		summarizeBy: none
+		sourceColumn: [Contract Value]
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Order Date'
+		dataType: dateTime
+		formatString: yyyy-mm-dd
+		lineageTag: 55555555-0000-0000-0000-000000000221
+		summarizeBy: none
+		sourceColumn: [Order Date]
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Ship Date'
+		dataType: dateTime
+		formatString: Long Date
+		lineageTag: 55555555-0000-0000-0000-000000000222
+		summarizeBy: none
+		sourceColumn: [Ship Date]
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Order Timestamp'
+		dataType: dateTime
+		formatString: yyyy-mm-dd hh:nn:ss
+		lineageTag: 55555555-0000-0000-0000-000000000223
+		summarizeBy: none
+		sourceColumn: [Order Timestamp]
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Order Time'
+		dataType: dateTime
+		formatString: h:nn:ss AM/PM
+		lineageTag: 55555555-0000-0000-0000-000000000224
+		summarizeBy: none
+		sourceColumn: [Order Time]
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Is Returned'
+		dataType: boolean
+		lineageTag: 55555555-0000-0000-0000-000000000225
+		summarizeBy: none
+		sourceColumn: [Is Returned]
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Nullable Amount'
+		dataType: double
+		formatString: #,0.00
+		lineageTag: 55555555-0000-0000-0000-000000000226
+		summarizeBy: none
+		sourceColumn: [Nullable Amount]
+
+		annotation SummarizationSetBy = Automatic
+
+	column Notes
+		dataType: string
+		lineageTag: 55555555-0000-0000-0000-000000000227
+		summarizeBy: none
+		sourceColumn: [Notes]
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Order Year'
+		dataType: int64
+		formatString: 0
+		lineageTag: 55555555-0000-0000-0000-000000000228
+		summarizeBy: none
+		sourceColumn: [Order Year]
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Order Month'
+		dataType: string
+		lineageTag: 55555555-0000-0000-0000-000000000229
+		summarizeBy: none
+		sourceColumn: [Order Month]
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Internal Hash'
+		dataType: string
+		isHidden
+		lineageTag: 55555555-0000-0000-0000-000000000230
+		summarizeBy: none
+		sourceColumn: [Internal Hash]
+
+		annotation SummarizationSetBy = Automatic
+
+	partition Orders = calculated
+		mode: import
+		source =
+				VAR _base = GENERATESERIES(1, 2000000, 1)
+				VAR _h =
+					ADDCOLUMNS(
+						_base,
+						"@h1", MOD([Value] * 48271, 2147483647),
+						"@h2", MOD([Value] * 69621, 2147483647),
+						"@h3", MOD([Value] * 16807, 2147483647),
+						"@h4", MOD([Value] * 39373, 2147483647),
+						"@h5", MOD([Value] * 40692, 2147483399)
+					)
+				RETURN
+					SELECTCOLUMNS(
+						_h,
+						"Row Id", CONVERT([Value], INTEGER),
+						"Order Number", "ORD-" & FORMAT([Value], "0000000"),
+						"Region", SWITCH(MOD([Value], 4), 0, "North", 1, "South", 2, "East", "West"),
+						"Category", SWITCH(MOD([@h1], 10), 0, "Hardware", 1, "Software", 2, "Services", 3, "Accessories", 4, "Furniture", 5, "Office Supplies", 6, "Electronics", 7, "Apparel", 8, "Grocery", "Toys"),
+						"Product Name", SWITCH(MOD([@h2], 12), 0, "Bolt, Hex 10mm", 1, "Pipe 3/4"" Copper", 2, "Café Crème Mug", 3, "Ünïcødé Widget ✓", 4, "日本製 Knife", 5, "Multi-line" & UNICHAR(10) & "Label", 6, "Quote ""Special"" Edition", 7, "Semi;Colon Kit", 8, "Tab" & UNICHAR(9) & "Separated", 9, "  Padded Name  ", 10, "=1+1 Formula Text", "Standard Widget"),
+						"Customer Name", "Customer " & FORMAT(MOD([@h3], 50000), "00000"),
+						"Postal Code", FORMAT(MOD([@h4], 100000), "00000"),
+						"Quantity", CONVERT(1 + MOD([@h1], 500), INTEGER),
+						"Unit Price", CONVERT(0.99 + MOD([@h2], 100000) / 100, CURRENCY),
+						"Discount Pct", CONVERT(MOD([@h3], 3001) / 10000, DOUBLE),
+						"Sales Amount", CONVERT((1 + MOD([@h1], 500)) * (0.99 + MOD([@h2], 100000) / 100) * (1 - MOD([@h3], 3001) / 10000) * IF(MOD([@h5], 20) = 0, -1, 1), CURRENCY),
+						"Unit Cost", CONVERT((0.99 + MOD([@h2], 100000) / 100) * (0.4 + MOD([@h4], 5000) / 10000), DOUBLE),
+						"Margin Ratio", CONVERT((MOD([@h5], 2001) - 1000) / 1000, DOUBLE),
+						"Weight Kg", CONVERT([@h4] / 1000003, DOUBLE),
+						"Scientific Value", CONVERT(POWER(10, MOD([@h1], 19) - 6) * (1 + MOD([@h2], 1000) / 1000), DOUBLE),
+						"Big Integer", CONVERT(9007199254740000 + [Value], INTEGER),
+						"Priority Code", CONVERT(MOD([@h3], 1000), INTEGER),
+						"Rating", CONVERT(1 + MOD([@h4], 41) / 10, DOUBLE),
+						"Tax Rate", CONVERT(MOD([@h5], 13) / 100, CURRENCY),
+						"Temperature", CONVERT((MOD([@h2], 901) - 400) / 10, DOUBLE),
+						"Contract Value", CONVERT([@h1] * 1.2345, CURRENCY),
+						"Order Date", CONVERT(DATE(2020, 1, 1) + MOD([@h1], 2192), DATETIME),
+						"Ship Date", CONVERT(DATE(2020, 1, 1) + MOD([@h1], 2192) + MOD([@h2], 15), DATETIME),
+						"Order Timestamp", CONVERT(DATE(2020, 1, 1) + MOD([@h1], 2192) + TIME(MOD([@h3], 24), MOD([@h4], 60), MOD([@h5], 60)), DATETIME),
+						"Order Time", CONVERT(TIME(MOD([@h3], 24), MOD([@h4], 60), MOD([@h5], 60)), DATETIME),
+						"Is Returned", MOD([@h5], 20) = 0,
+						"Nullable Amount", IF(MOD([Value], 7) = 0, BLANK(), CONVERT(MOD([@h4], 1000000) / 100, DOUBLE)),
+						"Notes", SWITCH(MOD([@h3], 5), 0, BLANK(), 1, "", 2, "Rush order", 3, "Gift wrap, with ""fragile"" sticker", "N/A"),
+						"Order Year", CONVERT(YEAR(DATE(2020, 1, 1) + MOD([@h1], 2192)), INTEGER),
+						"Order Month", FORMAT(DATE(2020, 1, 1) + MOD([@h1], 2192), "yyyy-mm"),
+						"Internal Hash", FORMAT([@h1], "0000000000")
+					)
+
+	annotation PBI_ResultType = Table

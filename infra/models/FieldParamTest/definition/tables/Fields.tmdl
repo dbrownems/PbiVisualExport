@@ -1,0 +1,47 @@
+table Fields
+	lineageTag: 33333333-0000-0000-0000-000000000020
+
+	column Fields
+		dataType: string
+		lineageTag: 33333333-0000-0000-0000-000000000021
+		summarizeBy: none
+		sourceColumn: [Value1]
+		sortByColumn: 'Fields Order'
+
+		relatedColumnDetails
+			groupByColumn: 'Fields Fields'
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Fields Fields'
+		dataType: string
+		isHidden
+		lineageTag: 33333333-0000-0000-0000-000000000022
+		summarizeBy: none
+		sourceColumn: [Value2]
+		sortByColumn: 'Fields Order'
+
+		extendedProperty ParameterMetadata = {"version":3,"kind":2}
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Fields Order'
+		dataType: int64
+		isHidden
+		formatString: 0
+		lineageTag: 33333333-0000-0000-0000-000000000023
+		summarizeBy: sum
+		sourceColumn: [Value3]
+
+		annotation SummarizationSetBy = Automatic
+
+	partition Fields = calculated
+		mode: import
+		source =
+				{
+				    ("Category", NAMEOF('Product'[Category]), 0),
+				    ("Segment", NAMEOF('Product'[Segment]), 1),
+				    ("Product Name", NAMEOF('Product'[Product]), 2)
+				}
+
+	annotation PBI_ResultType = Table

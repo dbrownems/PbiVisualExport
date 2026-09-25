@@ -1,0 +1,31 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/1.0.0/schema.json",
+  "name": "bar1",
+  "position": { "x": 332, "y": 352, "z": 2, "width": 300, "height": 336, "tabOrder": 2 },
+  "visual": {
+    "visualType": "clusteredBarChart",
+    "query": {
+      "queryState": {
+        "Category": {
+          "projections": [
+            {
+              "field": { "Column": { "Expression": { "SourceRef": { "Entity": "Store" } }, "Property": "Territory" } },
+              "queryRef": "Store.Territory",
+              "nativeQueryRef": "Territory",
+              "active": true
+            }
+          ]
+        },
+        "Y": {
+          "projections": [
+            {
+              "field": { "Measure": { "Expression": { "SourceRef": { "Entity": "Sales" } }, "Property": "TotalSales" } },
+              "queryRef": "Sales.TotalSales",
+              "nativeQueryRef": "TotalSales"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

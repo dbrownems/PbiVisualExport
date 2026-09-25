@@ -1,0 +1,3 @@
+relationship 88888888-0000-0000-0000-000000000001
+	fromColumn: Sales.RegionName
+	toColumn: Region.RegionName

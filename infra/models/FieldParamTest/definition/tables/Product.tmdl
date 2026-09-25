@@ -1,0 +1,55 @@
+table Product
+	lineageTag: 11111111-0000-0000-0000-000000000001
+
+	column ProductKey
+		dataType: int64
+		formatString: 0
+		lineageTag: 11111111-0000-0000-0000-000000000002
+		summarizeBy: none
+		sourceColumn: ProductKey
+
+		annotation SummarizationSetBy = Automatic
+
+	column Category
+		dataType: string
+		lineageTag: 11111111-0000-0000-0000-000000000003
+		summarizeBy: none
+		sourceColumn: Category
+
+		annotation SummarizationSetBy = Automatic
+
+	column Segment
+		dataType: string
+		lineageTag: 11111111-0000-0000-0000-000000000004
+		summarizeBy: none
+		sourceColumn: Segment
+
+		annotation SummarizationSetBy = Automatic
+
+	column Product
+		dataType: string
+		lineageTag: 11111111-0000-0000-0000-000000000005
+		summarizeBy: none
+		sourceColumn: Product
+
+		annotation SummarizationSetBy = Automatic
+
+	partition Product = m
+		mode: import
+		source =
+				let
+				    Source = #table(
+				        type table [ProductKey = Int64.Type, Category = text, Segment = text, Product = text],
+				        {
+				            {1, "Bikes", "Consumer", "Mountain-200"},
+				            {2, "Bikes", "Consumer", "Road-150"},
+				            {3, "Accessories", "Consumer", "Helmet"},
+				            {4, "Accessories", "Enterprise", "Fleet Lock"},
+				            {5, "Clothing", "Consumer", "Jersey"},
+				            {6, "Clothing", "Enterprise", "Team Kit"}
+				        }
+				    )
+				in
+				    Source
+
+	annotation PBI_ResultType = Table

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",
+  "metadata": {
+    "type": "SemanticModel",
+    "displayName": "LargeExportTest",
+    "description": "Large/wide export test model. One import calculated table, Orders: 2,000,000 deterministic rows x 31 columns covering every model data type (Int64, Double, Decimal, DateTime, Boolean, String) and a wide range of format strings (currency with parentheses negatives, percent, scientific, 3-section, zero-padded, quoted literal text, named date formats). Includes CSV-hostile strings (commas, quotes, newlines, tabs, unicode, leading '='), blanks, an Int64 column above 2^53, and a hidden column. Used to compare native report export against the API export."
+  },
+  "config": {
+    "version": "2.0",
+    "logicalId": "00000000-0000-0000-0000-000000000000"
+  }
+}

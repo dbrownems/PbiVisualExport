@@ -1,0 +1,29 @@
+# Build output
+bin/
+obj/
+*.user
+*.suo
+.vs/
+.vscode/
+*.swp
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Local config / secrets (supply your own; see .github/copilot-instructions.md)
+appsettings.*.local.json
+appsettings.Development.json
+secrets.json
+*.pfx
+
+# Machine-specific NuGet config (offline restore from this machine's cache)
+nuget.config
+
+# Upstream Microsoft sample clone (reference only; see AGENTS.md)
+_sample/
+
+# Exports, logs and perf artifacts
+*.log
+/exports/

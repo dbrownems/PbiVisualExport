@@ -1,0 +1,12 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",
+  "metadata": {
+    "type": "Report",
+    "displayName": "StoreSales",
+    "description": "Variety-of-visuals test report over the StoreSales model. Enhanced PBIR format so report design is inspectable: page 'Report Measures' uses the report-level measures 'Sales per Store' and 'Sales per Store (K)' (reportExtensions.json), which the CSV exporter reads from the report definition."
+  },
+  "config": {
+    "version": "2.0",
+    "logicalId": "00000000-0000-0000-0000-000000000000"
+  }
+}

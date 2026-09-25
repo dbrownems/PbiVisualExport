@@ -1,0 +1,44 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/reportExtension/1.0.0/schema.json",
+  "name": "extension",
+  "entities": [
+    {
+      "name": "Sales",
+      "measures": [
+        {
+          "name": "Sales per Store",
+          "dataType": "Double",
+          "expression": "DIVIDE ( [TotalSales], [Total Stores] )",
+          "formatString": "\\$#,0.00;(\\$#,0.00);\\$#,0.00",
+          "references": {
+            "measures": [
+              {
+                "entity": "Sales",
+                "name": "TotalSales"
+              },
+              {
+                "entity": "Store",
+                "name": "Total Stores"
+              }
+            ]
+          }
+        },
+        {
+          "name": "Sales per Store (K)",
+          "dataType": "Double",
+          "expression": "// report measure built on another report measure\n[Sales per Store] / 1000",
+          "formatString": "\\$#,0.0\"K\"",
+          "references": {
+            "measures": [
+              {
+                "schema": "extension",
+                "entity": "Sales",
+                "name": "Sales per Store"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

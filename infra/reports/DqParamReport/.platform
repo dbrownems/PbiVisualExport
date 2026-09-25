@@ -1,0 +1,12 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",
+  "metadata": {
+    "type": "Report",
+    "displayName": "DqParamReport",
+    "description": "Test report over a DirectQuery model with a Dynamic M query parameter. A slicer rebinds the M parameter (table selection) at query time. Validates that the exporter detects tables bound to dynamic M parameters and augments the generated DAX accordingly."
+  },
+  "config": {
+    "version": "2.0",
+    "logicalId": "00000000-0000-0000-0000-000000000000"
+  }
+}

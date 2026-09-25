@@ -1,0 +1,80 @@
+table Sales
+	lineageTag: 22222222-0000-0000-0000-000000000010
+
+	measure 'Total Amount' = SUM(Sales[Amount])
+		formatString: \$#,0.00;(\$#,0.00);\$#,0.00
+		lineageTag: 22222222-0000-0000-0000-000000000011
+
+	measure 'Total Quantity' = SUM(Sales[Quantity])
+		formatString: #,0
+		lineageTag: 22222222-0000-0000-0000-000000000012
+
+	column SaleID
+		dataType: int64
+		formatString: 0
+		lineageTag: 22222222-0000-0000-0000-000000000013
+		summarizeBy: none
+		sourceColumn: SaleID
+
+		annotation SummarizationSetBy = Automatic
+
+	column ProductKey
+		dataType: int64
+		formatString: 0
+		lineageTag: 22222222-0000-0000-0000-000000000014
+		summarizeBy: none
+		sourceColumn: ProductKey
+
+		annotation SummarizationSetBy = Automatic
+
+	column Region
+		dataType: string
+		lineageTag: 22222222-0000-0000-0000-000000000015
+		summarizeBy: none
+		sourceColumn: Region
+
+		annotation SummarizationSetBy = Automatic
+
+	column Quantity
+		dataType: int64
+		formatString: 0
+		lineageTag: 22222222-0000-0000-0000-000000000016
+		summarizeBy: sum
+		sourceColumn: Quantity
+
+		annotation SummarizationSetBy = Automatic
+
+	column Amount
+		dataType: decimal
+		formatString: \$#,0.00;(\$#,0.00);\$#,0.00
+		lineageTag: 22222222-0000-0000-0000-000000000017
+		summarizeBy: sum
+		sourceColumn: Amount
+
+		annotation SummarizationSetBy = Automatic
+
+	partition Sales = m
+		mode: import
+		source =
+				let
+				    Source = #table(
+				        type table [SaleID = Int64.Type, ProductKey = Int64.Type, Region = text, Quantity = Int64.Type, Amount = Currency.Type],
+				        {
+				            {1, 1, "East", 3, 1200.00},
+				            {2, 2, "East", 2, 900.00},
+				            {3, 3, "West", 10, 450.00},
+				            {4, 4, "West", 5, 1750.00},
+				            {5, 5, "North", 8, 640.00},
+				            {6, 6, "North", 4, 1200.00},
+				            {7, 1, "South", 1, 400.00},
+				            {8, 2, "South", 3, 1350.00},
+				            {9, 3, "East", 6, 270.00},
+				            {10, 5, "West", 12, 960.00},
+				            {11, 6, "North", 2, 600.00},
+				            {12, 4, "South", 7, 2450.00}
+				        }
+				    )
+				in
+				    Source
+
+	annotation PBI_ResultType = Table

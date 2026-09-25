@@ -1,0 +1,31 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/1.0.0/schema.json",
+  "name": "line1",
+  "position": { "x": 652, "y": 16, "z": 1, "width": 612, "height": 320, "tabOrder": 1 },
+  "visual": {
+    "visualType": "lineChart",
+    "query": {
+      "queryState": {
+        "Category": {
+          "projections": [
+            {
+              "field": { "Column": { "Expression": { "SourceRef": { "Entity": "Time" } }, "Property": "FiscalMonth" } },
+              "queryRef": "Time.FiscalMonth",
+              "nativeQueryRef": "FiscalMonth",
+              "active": true
+            }
+          ]
+        },
+        "Y": {
+          "projections": [
+            {
+              "field": { "Measure": { "Expression": { "SourceRef": { "Entity": "Sales" } }, "Property": "TotalSales" } },
+              "queryRef": "Sales.TotalSales",
+              "nativeQueryRef": "TotalSales"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

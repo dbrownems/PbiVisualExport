@@ -1,0 +1,80 @@
+table Sales
+	lineageTag: 77777777-0000-0000-0000-000000000001
+
+	measure 'Total Amount' = SUM(Sales[Amount])
+		formatString: \$#,0.00;(\$#,0.00);\$#,0.00
+		lineageTag: 77777777-0000-0000-0000-000000000010
+
+	measure 'Total Quantity' = SUM(Sales[Quantity])
+		formatString: #,0
+		lineageTag: 77777777-0000-0000-0000-000000000011
+
+	column SaleId
+		dataType: int64
+		formatString: 0
+		lineageTag: 77777777-0000-0000-0000-000000000002
+		summarizeBy: none
+		sourceColumn: SaleId
+
+		annotation SummarizationSetBy = Automatic
+
+	column RegionName
+		dataType: string
+		lineageTag: 77777777-0000-0000-0000-000000000003
+		summarizeBy: none
+		sourceColumn: RegionName
+
+		annotation SummarizationSetBy = Automatic
+
+	column Category
+		dataType: string
+		lineageTag: 77777777-0000-0000-0000-000000000004
+		summarizeBy: none
+		sourceColumn: Category
+
+		annotation SummarizationSetBy = Automatic
+
+	column Product
+		dataType: string
+		lineageTag: 77777777-0000-0000-0000-000000000005
+		summarizeBy: none
+		sourceColumn: Product
+
+		annotation SummarizationSetBy = Automatic
+
+	column Quantity
+		dataType: int64
+		formatString: 0
+		lineageTag: 77777777-0000-0000-0000-000000000006
+		summarizeBy: sum
+		sourceColumn: Quantity
+
+		annotation SummarizationSetBy = Automatic
+
+	column Amount
+		dataType: decimal
+		formatString: \$#,0.00;(\$#,0.00);\$#,0.00
+		lineageTag: 77777777-0000-0000-0000-000000000007
+		summarizeBy: sum
+		sourceColumn: Amount
+
+		annotation SummarizationSetBy = Automatic
+
+	column SaleDate
+		dataType: dateTime
+		formatString: General Date
+		lineageTag: 77777777-0000-0000-0000-000000000008
+		summarizeBy: none
+		sourceColumn: SaleDate
+
+		annotation SummarizationSetBy = Automatic
+
+	partition Sales = m
+		mode: directQuery
+		source =
+				let
+				    Source = Sql.Database(WhServer, WhDatabase, [Query="SELECT SaleId, RegionName, Category, Product, Quantity, Amount, SaleDate FROM dbo.SalesFact WHERE RegionName = '" & RegionParam & "'"])
+				in
+				    Source
+
+	annotation PBI_ResultType = Table

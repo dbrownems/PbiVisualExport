@@ -1,0 +1,3 @@
+relationship 44444444-0000-0000-0000-000000000001
+	fromColumn: Sales.ProductKey
+	toColumn: Product.ProductKey

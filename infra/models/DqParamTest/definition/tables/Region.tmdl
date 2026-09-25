@@ -1,0 +1,21 @@
+table Region
+	lineageTag: 66666666-0000-0000-0000-000000000001
+
+	column RegionName
+		dataType: string
+		lineageTag: 66666666-0000-0000-0000-000000000002
+		summarizeBy: none
+		sourceColumn: RegionName
+
+		annotation SummarizationSetBy = Automatic
+
+	partition Region = m
+		mode: directQuery
+		source =
+				let
+				    Source = Sql.Database(WhServer, WhDatabase),
+				    dbo_Region = Source{[Schema="dbo", Item="Region"]}[Data]
+				in
+				    dbo_Region
+
+	annotation PBI_ResultType = Table
