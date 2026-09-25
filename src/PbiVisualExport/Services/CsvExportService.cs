@@ -62,6 +62,7 @@ internal sealed class CsvExportService
         long rows = 0;
         await using (var writer = new StreamWriter(output, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true), 1 << 16, leaveOpen: true))
         {
+            writer.NewLine = "\r\n"; // RFC 4180, on every OS
             await writer.WriteLineAsync(string.Join(",", plan.Columns.Select(c => CsvEscape(c.Header))));
 
             var line = new StringBuilder(512);
