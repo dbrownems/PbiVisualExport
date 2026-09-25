@@ -71,8 +71,9 @@ The code lives in the private repo `dbrownems/PbiVisualExport`. The `.gitignore`
 excludes these:
 
 - `_sample/`: re-clone it from microsoft/PowerBI-Developer-Samples if needed.
-- `nuget.config`: the local copy is a machine-specific offline cache. Everywhere
-  else, restore uses nuget.org.
+- `nuget.config`: the local copy points at the Microsoft package feed proxy,
+  because managed devices block nuget.org and PyPI. Everywhere else, restore
+  uses nuget.org.
 - Build output.
 
 ## ⚠️ Before making this repo public

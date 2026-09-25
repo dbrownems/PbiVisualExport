@@ -584,9 +584,11 @@ The repo is a **private** GitHub repo, `dbrownems/PbiVisualExport`. The root
 - **`bin/`, `obj/`, `__pycache__/`**
 - **Local secrets**: `appsettings.*.local.json`, `appsettings.Development.json`,
   `secrets.json`
-- **`nuget.config`**: the local copy clears all sources and points at a
-  machine-local fallback cache (offline restore on the original dev box). On other
-  machines, restore uses nuget.org by default.
+- **`nuget.config`**: the local copy clears all sources and points at the
+  Microsoft package feed proxy
+  (`https://packagefeedproxy.microsoft.io/nuget/v3/index.json`). Microsoft-managed
+  devices block direct nuget.org and PyPI access. Other machines restore from
+  nuget.org by default.
 - **`_sample/`**: the upstream Microsoft clone, which has its own `.git`. To get
   it back, run
   `git clone https://github.com/microsoft/PowerBI-Developer-Samples _sample`

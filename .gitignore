@@ -18,7 +18,7 @@ appsettings.Development.json
 secrets.json
 *.pfx
 
-# Machine-specific NuGet config (offline restore from this machine's cache)
+# Machine-specific NuGet config (Microsoft package feed proxy on managed devices)
 nuget.config
 
 # Upstream Microsoft sample clone (reference only; see AGENTS.md)
