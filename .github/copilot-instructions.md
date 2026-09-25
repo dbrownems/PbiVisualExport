@@ -110,10 +110,6 @@ secret.)
 - When adding a new environment-specific setting: add the key to
   `appsettings.json` with an empty value and a `"// Key"` note, bind it in
   `Options/Options.cs`, and document it here. Never commit the real value.
-- `tools/XmlaSmoke` uses the **same `UserSecretsId`** (it shares
-  `AzureAd:TenantId`) and adds `XmlaSmoke:DatasetId`, which is required. Its
-  cascade is built by hand in `Program.cs`, and it always loads user secrets
-  because it's a dev-only tool.
 
 ## Authentication model (important)
 
@@ -209,7 +205,7 @@ src/PbiVisualExport.Web/
   Views/Home/Index.cshtml        Toolbar (report/visual pickers, Export, debug panel), hidden download form (+ antiforgery token)
   wwwroot/js/app.js              Embed, gather fields+filters, streamed download (Save As picker / form post), debug panel
 infra/                           Fabric authoring (see infra section)
-tools/                           WhSql (seed Warehouse), XmlaSmoke (legacy TOM + executeQueries smoke test)
+tools/                           WhSql (seed Warehouse)
 _sample/                         Upstream MS "Embed for your customers/AppOwnsData" clone (reference only; git-ignored)
 ```
 
@@ -543,13 +539,7 @@ _sample/                         Upstream MS "Embed for your customers/AppOwnsDa
     `active` belongs only on drill levels (slicer, matrix Rows, chart Category).
 
 - **`tools/`**: `WhSql` runs a `.sql` file against a Fabric Warehouse using a
-  `https://database.windows.net/` token from the `SQLTOKEN` env var. `XmlaSmoke`
-  is a standalone TOM + REST `executeQueries` smoke test from before the XMLA
-  switch (it does not exercise the current data path). It needs
-  `XmlaSmoke:DatasetId` (user secrets, `XmlaSmoke__DatasetId`, or
-  `-- --XmlaSmoke:DatasetId <id>`). Its committed `model.bim` is from the original
-  sample model, which has since been deleted, so the TOPN query only succeeds
-  against a dataset with those tables.
+  `https://database.windows.net/` token from the `SQLTOKEN` env var.
 
 ## Task → file map
 
@@ -691,8 +681,8 @@ The repo is a **private** GitHub repo, `dbrownems/PbiVisualExport`. The root
 
 ## ⚠️ Before making this repo public
 
-1. **App, tool and infra config: done.** `appsettings.json` and
-   `tools/XmlaSmoke` read environment IDs from user secrets or env vars (see
+1. **App and infra config: done.** `appsettings.json` reads environment IDs
+   from user secrets or env vars (see
    *Configuration*). `infra/` resolves them at deploy time: the workspace comes
    from the same cascade, and model ids and the Warehouse host come from
    `{{…}}` tokens (see *Infra*). Only public client IDs (Azure CLI, Analysis

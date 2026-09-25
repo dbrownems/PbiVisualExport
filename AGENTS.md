@@ -52,7 +52,7 @@ user secrets (Development only; the local secret store) < environment variables
   `generate-large-export.py` generates the 2M-row test model + report;
   `compare-exports.py` diffs API vs native exports.
   Test reports are modern enhanced PBIR — see `infra/reports/README.md`.
-- `tools/` — `WhSql` (seed a Warehouse), `XmlaSmoke` (legacy TOM + executeQueries smoke test).
+- `tools/` — `WhSql` (seed a Warehouse).
 - `_sample/` — untouched Microsoft "Embed for your customers/AppOwnsData" clone (reference only; git-ignored, not committed).
 
 ## Rules of the road
