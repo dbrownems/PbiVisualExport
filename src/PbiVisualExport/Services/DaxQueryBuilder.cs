@@ -246,7 +246,7 @@ internal sealed class DaxQueryBuilder
         return list;
     }
 
-    public DaxPlan Build(VisualExportRequest request, TOM.Model model, ReportDefinition? report = null)
+    public DaxPlan Build(VisualExportRequest request, TOM.Model model, ReportDefinition? report = null, IEnumerable<string>? warningsSoFar = null)
     {
         var dims = new List<DimField>();
         var measures = new List<MeasureField>();
@@ -303,7 +303,7 @@ internal sealed class DaxQueryBuilder
             throw new ExportRequestException("The visual has no exportable columns or measures (all fields are hidden on the visual).");
 
         var extraGroupBy = GroupByKeyColumns(request, model, dims);
-        var warnings = new List<string>();
+        var warnings = new List<string>(warningsSoFar ?? Array.Empty<string>());
         var filters = BuildFilters(request.Filters, model, measures, name => UseReportMeasure(name) is not null, warnings);
 
         List<SortKey> sortKeys;
@@ -429,7 +429,7 @@ internal sealed class DaxQueryBuilder
         return keys;
     }
 
-    private static string NormalizeAggregation(string? aggregation) => (aggregation ?? "").Trim().ToLowerInvariant() switch
+    internal static string NormalizeAggregation(string? aggregation) => (aggregation ?? "").Trim().ToLowerInvariant() switch
     {
         "average" => "avg",
         "countnonnull" => "count",

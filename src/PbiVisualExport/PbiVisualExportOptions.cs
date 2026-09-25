@@ -77,12 +77,20 @@ public sealed class ExportOptions
     public int MaxConcurrentExports { get; set; } = 0;
 
     /// <summary>
-    /// How requested output fields are checked against the visual's saved definition (so a
-    /// caller can only export columns the visual actually shows):
-    ///  * Strict (default): the report must be PBIR (enhanced format) and every exported field
-    ///    must be one of the visual's fields; PBIR-Legacy reports are rejected.
+    /// How the requested fields are checked against the visual as saved in the published report
+    /// definition (downloaded and cached), so a caller can only export what the visual shows:
+    ///  * Strict (default): the report must be PBIR (enhanced format). The request must name
+    ///    the page and visual (400 otherwise), the visual must be in the saved definition, and
+    ///    every output field must be one of its fields: the same column, the same measure, or
+    ///    the same aggregation of a column, in any of its data roles (403 otherwise; unsaved or
+    ///    personalized visuals can't be exported). Sort keys that are neither fields of the
+    ///    visual nor in its saved sort are dropped with a warning. PBIR-Legacy reports get 403.
     ///  * PbirOnly: as Strict for PBIR reports; PBIR-Legacy reports are exported unchecked.
     ///  * Off: no check (the request's field list is trusted).
+    /// Filters are not restricted: the embedding API can apply any filter to the live visual
+    /// anyway, and filters only narrow the rows. A miss re-downloads a cached definition older
+    /// than <see cref="MetadataCacheOptions.RefreshOnMissSeconds"/> once (the report may have
+    /// just been republished).
     /// </summary>
     public FieldValidationMode FieldValidation { get; set; } = FieldValidationMode.Strict;
 
@@ -94,6 +102,7 @@ public sealed class ExportOptions
     public bool EnableBenchmark { get; set; } = false;
 }
 
+/// <summary>See <see cref="ExportOptions.FieldValidation"/>.</summary>
 public enum FieldValidationMode
 {
     Strict,

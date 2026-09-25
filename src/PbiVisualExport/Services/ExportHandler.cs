@@ -115,7 +115,7 @@ internal sealed class ExportHandler
         }
         catch (ExportRequestException ex)
         {
-            return Error(StatusCodes.Status400BadRequest, ex.Message);
+            return Rejected(ex);
         }
         catch (XmlaSignInRequiredException ex)
         {
@@ -205,7 +205,7 @@ internal sealed class ExportHandler
         }
         catch (ExportRequestException ex)
         {
-            return Error(StatusCodes.Status400BadRequest, ex.Message);
+            return Rejected(ex);
         }
         catch (XmlaSignInRequiredException ex)
         {
@@ -256,11 +256,10 @@ internal sealed class ExportHandler
         }
         catch (ExportRequestException ex) when (!response.HasStarted)
         {
-            _log.LogWarning("Export request rejected: {Error}", ex.Message);
             failure = ex.Message;
             ticket?.Finish(DownloadState.Failed, failure);
             response.Clear();
-            await Error(StatusCodes.Status400BadRequest, ex.Message).ExecuteAsync(http);
+            await Rejected(ex).ExecuteAsync(http);
         }
         catch (XmlaSignInRequiredException ex) when (!response.HasStarted)
         {
@@ -376,6 +375,13 @@ internal sealed class ExportHandler
             Json, statusCode: StatusCodes.Status503ServiceUnavailable);
 
     private static IResult Error(int status, string message) => Results.Json(new { error = message }, Json, statusCode: status);
+
+    private IResult Rejected(ExportRequestException ex)
+    {
+        if (ex.StatusCode == StatusCodes.Status403Forbidden) _log.LogWarning("Export refused: {Error}", ex.Message);
+        else _log.LogWarning("Export request rejected ({Status}): {Error}", ex.StatusCode, ex.Message);
+        return Error(ex.StatusCode, ex.Message);
+    }
 
     private static void Stamp(HttpContext http) => http.Response.Headers[ContractHeader] = ContractVersion;
 

@@ -131,39 +131,69 @@ internal sealed class CsvExportService
     /// Loads the (cached) model metadata and builds the DAX plan without touching XMLA.
     /// Used by the export itself and by the pre-flight check.
     ///
-    /// A measure the model doesn't have may be a report-level measure: only then is the report
-    /// definition loaded (cached too) and its <c>reportExtensions.json</c> measures consulted,
-    /// which requires a PBIR (enhanced format) report. Fields still missing trigger one
-    /// re-download of the definitions involved (see <see cref="MetadataCacheOptions.RefreshOnMissSeconds"/>)
-    /// and then an <see cref="ExportRequestException"/>.
+    /// Unless <see cref="ExportOptions.FieldValidation"/> is Off, the report definition is
+    /// loaded (cached) and the requested fields are checked against the visual's saved
+    /// definition first (<see cref="VisualFieldValidator"/>); a refusal throws an
+    /// <see cref="ExportRequestException"/> with its status code (403 / 400).
+    ///
+    /// A measure the model doesn't have may be a report-level measure: then the report's
+    /// <c>reportExtensions.json</c> measures are consulted, which requires a PBIR (enhanced
+    /// format) report. A visual or fields not found trigger one re-download of the definitions
+    /// involved (see <see cref="MetadataCacheOptions.RefreshOnMissSeconds"/>) and then an
+    /// <see cref="ExportRequestException"/>.
     /// </summary>
     public async Task<DaxPlan> PlanAsync(VisualExportRequest request, CancellationToken ct)
     {
         var workspaceId = Guid.Parse(request.WorkspaceId!);
         var datasetId = Guid.Parse(request.DatasetId!);
         var reportId = Guid.Parse(request.ReportId!);
+        TimeSpan? refreshAge = _cacheOptions.RefreshOnMissSeconds > 0 ? TimeSpan.FromSeconds(_cacheOptions.RefreshOnMissSeconds) : null;
+
+        ReportDefinition? report = null;
+        IReadOnlyList<string> validationWarnings = Array.Empty<string>();
+        if (_export.FieldValidation != FieldValidationMode.Off)
+        {
+            report = await _reports.GetAsync(workspaceId, reportId, maxAge: null, ct);
+            var check = VisualFieldValidator.Validate(request, report, _export.FieldValidation);
+            if (check.Stale && refreshAge is { } age)
+            {
+                _log.LogInformation("Visual {Visual} or its fields not in the cached report definition; refreshing it if older than {MaxAge}",
+                    request.VisualName, age);
+                report = await _reports.GetAsync(workspaceId, reportId, age, ct);
+                check = VisualFieldValidator.Validate(request, report, _export.FieldValidation);
+            }
+            if (check.Error is not null)
+            {
+                foreach (var e in report.VisualErrors) _log.LogWarning("Unreadable visual definition in report {ReportId}: {Error}", reportId, e);
+                throw new ExportRequestException(check.Error, check.StatusCode);
+            }
+            if (!check.Checked)
+                _log.LogWarning("Report {ReportId} is in {Format} format: exported fields not checked against the visual (FieldValidation=PbirOnly)",
+                    reportId, report.Format);
+            request = check.Request;
+            validationWarnings = check.Warnings;
+        }
 
         var model = await _metadata.GetModelAsync(workspaceId, datasetId, maxAge: null, ct);
         var unresolved = DaxQueryBuilder.FindUnresolvedFields(request, model);
-        if (unresolved.Count == 0) return _builder.Build(request, model);
+        if (unresolved.Count == 0) return _builder.Build(request, model, report, validationWarnings);
 
         // Only measures can be report measures; an unknown column never needs the report.
-        var report = NeedsReport(unresolved) ? await _reports.GetAsync(workspaceId, reportId, maxAge: null, ct) : null;
+        if (NeedsReport(unresolved)) report ??= await _reports.GetAsync(workspaceId, reportId, maxAge: null, ct);
         var missing = Missing(unresolved, report);
-        if (missing.Count > 0 && _cacheOptions.RefreshOnMissSeconds > 0)
+        if (missing.Count > 0 && refreshAge is { } maxAge)
         {
-            var maxAge = TimeSpan.FromSeconds(_cacheOptions.RefreshOnMissSeconds);
             _log.LogInformation("Fields not in cached metadata ({Missing}); refreshing definitions older than {MaxAge}",
                 string.Join(", ", missing.Select(u => u.Label)), maxAge);
             model = await _metadata.GetModelAsync(workspaceId, datasetId, maxAge, ct);
             unresolved = DaxQueryBuilder.FindUnresolvedFields(request, model);
-            report = NeedsReport(unresolved) ? await _reports.GetAsync(workspaceId, reportId, maxAge, ct) : null;
+            if (NeedsReport(unresolved)) report = await _reports.GetAsync(workspaceId, reportId, maxAge, ct);
             missing = Missing(unresolved, report);
         }
 
         if (missing.Count > 0) throw UnresolvedError(request, missing, report);
 
-        var plan = _builder.Build(request, model, report);
+        var plan = _builder.Build(request, model, report, validationWarnings);
         if (plan.ReportMeasures.Count > 0)
             _log.LogInformation("Report-level measures defined in the query: {Measures}", string.Join(", ", plan.ReportMeasures));
         return plan;

@@ -28,7 +28,8 @@ pwsh infra/perf-export.ps1 -Request detail1-request.json -Rows 250000,1000000,0 
 #>
 [CmdletBinding()]
 param(
-    # A VisualExportRequest JSON, e.g. copied from the debug panel.
+    # A VisualExportRequest JSON, e.g. copied from the debug panel. It must name the page and
+    # visual (pageName, visualName) unless the server runs with Export:FieldValidation=Off.
     [Parameter(Mandatory)] [string] $Request,
     # Lists also accept one comma-separated string (pwsh -File passes "a,b" unsplit).
     [string[]] $Rows = @('0'),

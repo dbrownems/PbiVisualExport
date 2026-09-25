@@ -117,6 +117,14 @@ public sealed class VisualExportRequest
     /// whole result on the capacity (useful for multi-million-row exports).
     /// </summary>
     public bool ApplySort { get; set; } = true;
+
+    /// <summary>A shallow copy with <paramref name="sort"/> as its sort.</summary>
+    internal VisualExportRequest WithSort(List<ExportSort> sort)
+    {
+        var copy = (VisualExportRequest)MemberwiseClone();
+        copy.Sort = sort;
+        return copy;
+    }
 }
 
 /// <summary>

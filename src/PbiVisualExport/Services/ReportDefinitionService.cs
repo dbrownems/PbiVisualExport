@@ -85,9 +85,10 @@ internal sealed partial class ReportDefinition
     };
 
     private readonly Dictionary<string, ReportMeasure> _measuresByName;
+    private readonly Dictionary<(string Page, string Visual), VisualDefinition> _visuals;
 
     private ReportDefinition(string format, IReadOnlyList<string> partPaths, IReadOnlyDictionary<string, string> parts,
-        List<ReportMeasure> measures)
+        List<ReportMeasure> measures, List<VisualDefinition> visuals, List<string> visualErrors)
     {
         Format = format;
         PartPaths = partPaths;
@@ -95,6 +96,9 @@ internal sealed partial class ReportDefinition
         Measures = measures;
         _measuresByName = new Dictionary<string, ReportMeasure>(StringComparer.OrdinalIgnoreCase);
         foreach (var m in measures) _measuresByName.TryAdd(m.Name, m);
+        _visuals = new Dictionary<(string, string), VisualDefinition>(PageVisualComparer.Instance);
+        foreach (var v in visuals) _visuals.TryAdd((v.PageName, v.Name), v);
+        VisualErrors = visualErrors;
     }
 
     /// <summary><c>PBIR</c> (enhanced report format), <c>PBIR-Legacy</c>, or <c>Unknown</c>.</summary>
@@ -108,6 +112,15 @@ internal sealed partial class ReportDefinition
     public IReadOnlyDictionary<string, string> Parts { get; }
 
     public IReadOnlyList<ReportMeasure> Measures { get; }
+
+    /// <summary>The saved visuals (PBIR only).</summary>
+    public IEnumerable<VisualDefinition> Visuals => _visuals.Values;
+
+    /// <summary><c>visual.json</c> parts that couldn't be parsed (path: error); those visuals can't be exported under field validation.</summary>
+    public IReadOnlyList<string> VisualErrors { get; }
+
+    /// <summary>A saved visual by page and visual name (the embedding API's <c>page.name</c> / <c>visual.name</c>); PBIR only.</summary>
+    public VisualDefinition? FindVisual(string pageName, string visualName) => _visuals.GetValueOrDefault((pageName, visualName));
 
     /// <summary>Report measure names are unique across the report and the model.</summary>
     public ReportMeasure? FindMeasure(string name) => _measuresByName.GetValueOrDefault(name);
@@ -148,7 +161,56 @@ internal sealed partial class ReportDefinition
         var measures = s.Format == Pbir && parts.TryGetValue(ExtensionsPath, out var ext)
             ? ParseReportExtensions(ext)
             : new List<ReportMeasure>();
-        return new ReportDefinition(s.Format, s.PartPaths, parts, measures);
+        var visuals = new List<VisualDefinition>();
+        var visualErrors = new List<string>();
+        if (s.Format == Pbir) ParseVisuals(parts, visuals, visualErrors);
+        return new ReportDefinition(s.Format, s.PartPaths, parts, measures, visuals, visualErrors);
+    }
+
+    /// <summary>
+    /// Indexes <c>definition/pages/{page}/visuals/{visual}/visual.json</c> by the page's
+    /// <c>name</c> (from its <c>page.json</c>) and the visual's <c>name</c>; the folder
+    /// names are the fallback (Desktop names them after the objects).
+    /// </summary>
+    private static void ParseVisuals(IReadOnlyDictionary<string, string> parts, List<VisualDefinition> visuals, List<string> errors)
+    {
+        var pageNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (path, text) in parts)
+        {
+            var seg = path.Split('/');
+            if (seg.Length != 4 || !IsPagesPath(seg) || !seg[3].Equals("page.json", StringComparison.OrdinalIgnoreCase)) continue;
+            try
+            {
+                using var doc = JsonDocument.Parse(text, new JsonDocumentOptions { CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true });
+                if (doc.RootElement.ValueKind == JsonValueKind.Object && Str(doc.RootElement, "name") is { Length: > 0 } name)
+                    pageNames[seg[2]] = name;
+            }
+            catch (JsonException ex) { errors.Add($"{path}: {ex.Message}"); }
+        }
+
+        foreach (var (path, text) in parts)
+        {
+            var seg = path.Split('/');
+            if (seg.Length != 6 || !IsPagesPath(seg) || !seg[3].Equals("visuals", StringComparison.OrdinalIgnoreCase)
+                || !seg[5].Equals("visual.json", StringComparison.OrdinalIgnoreCase)) continue;
+            try
+            {
+                if (VisualDefinition.Parse(pageNames.GetValueOrDefault(seg[2], seg[2]), seg[4], text) is { } v) visuals.Add(v);
+            }
+            catch (JsonException ex) { errors.Add($"{path}: {ex.Message}"); }
+        }
+    }
+
+    private static bool IsPagesPath(string[] seg) =>
+        seg[0].Equals("definition", StringComparison.OrdinalIgnoreCase) && seg[1].Equals("pages", StringComparison.OrdinalIgnoreCase);
+
+    private sealed class PageVisualComparer : IEqualityComparer<(string Page, string Visual)>
+    {
+        public static readonly PageVisualComparer Instance = new();
+        public bool Equals((string Page, string Visual) x, (string Page, string Visual) y) =>
+            StringComparer.OrdinalIgnoreCase.Equals(x.Page, y.Page) && StringComparer.OrdinalIgnoreCase.Equals(x.Visual, y.Visual);
+        public int GetHashCode((string Page, string Visual) obj) =>
+            HashCode.Combine(StringComparer.OrdinalIgnoreCase.GetHashCode(obj.Page), StringComparer.OrdinalIgnoreCase.GetHashCode(obj.Visual));
     }
 
     /// <summary>
