@@ -29,9 +29,11 @@ public sealed class PowerBIOptions
 {
     public const string SectionName = "PowerBI";
 
+    /// <summary>Required. The only workspace the app embeds from and exports (validated at startup).</summary>
     public string WorkspaceId { get; set; } = "";
+
+    /// <summary>Optional default report; when empty the first report in the workspace is selected.</summary>
     public string ReportId { get; set; } = "";
-    public string DatasetId { get; set; } = "";
 
     /// <summary>XMLA endpoint prefix; the workspace name is appended (e.g. powerbi://api.powerbi.com/v1.0/myorg/Sales).</summary>
     public string XmlaEndpoint { get; set; } = "powerbi://api.powerbi.com/v1.0/myorg";

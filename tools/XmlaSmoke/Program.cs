@@ -1,14 +1,44 @@
 using System.Net.Http.Headers;
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using Azure.Core;
 using Azure.Identity;
+using Microsoft.Extensions.Configuration;
 using TOM = Microsoft.AnalysisServices.Tabular;
 
+// Settings cascade (later wins): appsettings.json < user secrets < env vars < command line.
+// User secrets are always loaded (dev-only tool) and shared with the web app's secret store.
+string projectDir = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", ".."));
+IConfiguration config = new ConfigurationBuilder()
+    .SetBasePath(AppContext.BaseDirectory)
+    .AddJsonFile("appsettings.json", optional: true)
+    .AddUserSecrets(Assembly.GetExecutingAssembly(), optional: true)
+    .AddEnvironmentVariables()
+    .AddCommandLine(args)
+    .Build();
+
+string Setting(string key, bool required = false)
+{
+    string v = config[key];
+    if (required && string.IsNullOrWhiteSpace(v))
+    {
+        Console.Error.WriteLine($"{key} is not configured. Set it with one of:\n" +
+            $"  dotnet user-secrets set {key} <value> --project tools/XmlaSmoke\n" +
+            $"  $env:{key.Replace(":", "__")} = '<value>'\n" +
+            $"  dotnet run --project tools/XmlaSmoke -- --{key} <value>");
+        Environment.Exit(2);
+    }
+    return string.IsNullOrWhiteSpace(v) ? null : v;
+}
+
 const string scope = "https://analysis.windows.net/powerbi/api/.default";
-const string tenant = "00000000-0000-0000-0000-000000000024";
-const string datasetId = "00000000-0000-0000-0000-000000000025";
-string bimPath = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "model.bim");
+// Microsoft's well-known public client ID for the Azure CLI (not environment-specific).
+const string azureCliClientId = "04b07795-8ddb-461a-bbee-02f9e1bf7b46";
+string tenant = Setting("AzureAd:TenantId");
+string datasetId = Setting("XmlaSmoke:DatasetId", required: true);
+string bimPath = Path.Combine(projectDir, Setting("XmlaSmoke:ModelBimPath") ?? "model.bim");
+Console.WriteLine($"[config] dataset={datasetId} tenant={tenant ?? "(organizations)"} bim={bimPath}");
 
 // ---- 1. Acquire PBI token (for executeQueries data path) ----
 AccessToken tok;
@@ -24,7 +54,7 @@ catch (Exception ex)
     var dc = new DeviceCodeCredential(new DeviceCodeCredentialOptions
     {
         TenantId = tenant,
-        ClientId = "04b07795-8ddb-461a-bbee-02f9e1bf7b46",
+        ClientId = azureCliClientId,
         DeviceCodeCallback = (i, _) => { Console.WriteLine(i.Message); return Task.CompletedTask; }
     });
     tok = await dc.GetTokenAsync(ctx);

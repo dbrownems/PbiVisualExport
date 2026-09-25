@@ -18,13 +18,20 @@ endpoint** (ADOMD.NET — no paging, no row caps), and streams the rows as CSV.
 
 ```pwsh
 az login                                   # default auth mode is AzureCli (dev "super user")
-dotnet run --project src/PbiVisualExport.Web --urls http://localhost:5099
+dotnet user-secrets set PowerBI:WorkspaceId <workspace-guid> --project src/PbiVisualExport.Web  # once
+dotnet run --project src/PbiVisualExport.Web   # launchSettings: Development, http://localhost:5099
 ```
 
-Requires the **.NET 10 SDK**. There is no `launchSettings.json` (set `--urls`) and
-no app-level `.sln` (the one under `_sample/` is the upstream clone, not this app).
-In dev mode the first export triggers a one-time **XMLA device-code sign-in**
-(XMLA rejects Azure CLI tokens); the UI shows the code.
+Requires the **.NET 10 SDK**. There's no app-level `.sln` (the one under `_sample/`
+is the upstream clone, not this app). In dev mode the first export triggers a
+one-time **XMLA device-code sign-in** (XMLA rejects Azure CLI tokens); the UI
+shows the code.
+
+**Settings cascade** (later wins): `appsettings.json` (committed, IDs empty) <
+user secrets (Development only; the local secret store) < environment variables
+(deployed, e.g. `PowerBI__WorkspaceId`, `AzureAd__AuthenticationMode=ServicePrincipal`)
+< command line. Never commit environment IDs. See "Configuration" in
+[`.github/copilot-instructions.md`](.github/copilot-instructions.md).
 
 ## Layout (essentials)
 
@@ -78,6 +85,7 @@ excludes these:
 
 ## ⚠️ Before making this repo public
 
-`appsettings.json` has real tenant/workspace/dataset IDs, and
-`tools/XmlaSmoke/Program.cs` has hard-coded IDs. See "Before making this repo
-public" in [`.github/copilot-instructions.md`](.github/copilot-instructions.md).
+App and tool config no longer commit environment IDs. `infra/` still has
+workspace/dataset/Warehouse IDs, and the initial commit's history has the old
+ones. See "Before making this repo public" in
+[`.github/copilot-instructions.md`](.github/copilot-instructions.md).

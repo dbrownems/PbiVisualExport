@@ -37,12 +37,14 @@ is **no paging** — a 2M-row × 30-column export is a single query (~95 s forma
 # Prereq for the default dev auth mode (AzureCli): sign in first.
 az login
 
-# Run the web app (there is no launchSettings.json; set the URL explicitly).
-dotnet run --project src/PbiVisualExport.Web --urls http://localhost:5099
+# Run the web app. launchSettings.json sets Development (loads user secrets) + port 5099.
+dotnet run --project src/PbiVisualExport.Web
 # open http://localhost:5099
 ```
 
-- Requires the **.NET 10 SDK**.
+- Requires the **.NET 10 SDK**, and on first use the local settings from
+  *Configuration* below (at minimum `PowerBI:WorkspaceId` in user secrets). Without
+  it the app exits at startup with a message naming the fix.
 - In dev mode the **first export** asks for a one-time XMLA device-code sign-in
   (the UI shows the code; it is also logged as `XMLA DEVICE CODE`). See
   *XMLA credential* below.
@@ -50,6 +52,68 @@ dotnet run --project src/PbiVisualExport.Web --urls http://localhost:5099
   depend on culture-aware formatting. Don't flip it to true.
 - There is **no `.sln` for the app** (the only `.sln` lives under `_sample/`, which is
   the untouched upstream Microsoft sample — reference only, not the running app).
+
+## Configuration (settings cascade)
+
+Environment-specific IDs are **not committed**. `appsettings.json` holds the keys
+(with empty IDs) and non-environment defaults. The standard ASP.NET Core
+providers are layered; **later wins**:
+
+| Layer | Loaded | Used for |
+|---|---|---|
+| `appsettings.json` | always | committed defaults, empty IDs |
+| `appsettings.{Environment}.json` | if present (`appsettings.Development.json` is git-ignored) | optional local tweaks |
+| **User secrets** (`<UserSecretsId>` in the csproj) | **Development only** | the local secret store: this dev box's IDs |
+| **Environment variables** (`Section__Key`) | always | deployed: App Service settings, containers; Key Vault references also arrive this way |
+| Command line (`--Section:Key value`) | always | one-off overrides |
+
+`dotnet run` picks up `Properties/launchSettings.json`, which sets Development and
+port 5099. Running the built exe directly defaults to **Production**, so no user
+secrets load; pass `--environment Development` for local runs
+(`infra/perf-export.ps1` does this).
+
+Local setup (values live in
+`%APPDATA%\Microsoft\UserSecrets\7ad05434-b6db-4caf-8ad0-a97c908c87ae\secrets.json`,
+outside the repo):
+
+```pwsh
+dotnet user-secrets set PowerBI:WorkspaceId <workspace-guid> --project src/PbiVisualExport.Web
+dotnet user-secrets set AzureAd:TenantId   <tenant-guid>    --project src/PbiVisualExport.Web
+dotnet user-secrets set PowerBI:ReportId   <report-guid>    --project src/PbiVisualExport.Web  # optional
+dotnet user-secrets list --project src/PbiVisualExport.Web
+```
+
+Deployed with a service principal (app settings or environment variables):
+
+```
+AzureAd__AuthenticationMode = ServicePrincipal
+AzureAd__TenantId           = <tenant-guid>
+AzureAd__ClientId           = <app-registration client id>
+AzureAd__ClientSecret       = <secret>   # prefer @Microsoft.KeyVault(SecretUri=...) on App Service
+PowerBI__WorkspaceId        = <workspace-guid>
+PowerBI__ReportId           = <report-guid>   # optional
+```
+
+(`MasterUser` uses `AzureAd__PbiUsername` / `AzureAd__PbiPassword` in place of the
+secret.)
+
+- `PowerBI:WorkspaceId` is **required** and validated at startup
+  (`ValidateOnStart` in `Program.cs`). A missing or invalid value stops the app with
+  a message giving both the user-secrets command and the env-var name.
+- `PowerBI:ReportId` is optional. When empty, the UI selects the first report in
+  the workspace.
+- `AzureAd:TenantId` is optional for `AzureCli`/`DeviceCode` and required for
+  `ServicePrincipal`/`MasterUser` (`PbiTokenProvider.Require`).
+- `AzureAd:XmlaClientId` (`cf710c6e-…`) and the Azure CLI client ID used by the
+  tools are **Microsoft's well-known public clients**, the same in every tenant.
+  They stay committed.
+- When adding a new environment-specific setting: add the key to
+  `appsettings.json` with an empty value and a `"// Key"` note, bind it in
+  `Options/Options.cs`, and document it here. Never commit the real value.
+- `tools/XmlaSmoke` uses the **same `UserSecretsId`** (it shares
+  `AzureAd:TenantId`) and adds `XmlaSmoke:DatasetId`, which is required. Its
+  cascade is built by hand in `Program.cs`, and it always loads user secrets
+  because it's a dev-only tool.
 
 ## Authentication model (important)
 
@@ -119,7 +183,8 @@ flowchart LR
 ```
 src/PbiVisualExport.Web/
   Program.cs                     DI wiring + routes (MVC + attribute-routed API)
-  appsettings.json               AzureAd / PowerBI (Workspace/Report/Dataset/XmlaEndpoint) / Export / MetadataCache
+  appsettings.json               Keys + defaults only (IDs empty; see Configuration): AzureAd / PowerBI / Export / MetadataCache
+  Properties/launchSettings.json `dotnet run` profile: Development (loads user secrets), http://localhost:5099
   Auth/PbiTokenProvider.cs       Credential factory + PBI/Fabric token minting
   Auth/XmlaTokenProvider.cs      XMLA credential (Shared, or non-blocking dev device-code sign-in)
   Options/Options.cs             AzureAdOptions, PowerBIOptions, ExportOptions, MetadataCacheOptions
@@ -452,9 +517,13 @@ _sample/                         Upstream MS "Embed for your customers/AppOwnsDa
     `active` belongs only on drill levels (slicer, matrix Rows, chart Category).
 
 - **`tools/`**: `WhSql` runs a `.sql` file against a Fabric Warehouse using a
-  `https://database.windows.net/` token from the `SQLTOKEN` env var; `XmlaSmoke`
+  `https://database.windows.net/` token from the `SQLTOKEN` env var. `XmlaSmoke`
   is a standalone TOM + REST `executeQueries` smoke test from before the XMLA
-  switch (it does not exercise the current data path).
+  switch (it does not exercise the current data path). It needs
+  `XmlaSmoke:DatasetId` (user secrets, `XmlaSmoke__DatasetId`, or
+  `-- --XmlaSmoke:DatasetId <id>`). Its committed `model.bim` is from the original
+  sample model, which has since been deleted, so the TOPN query only succeeds
+  against a dataset with those tables.
 
 ## Task → file map
 
@@ -596,11 +665,13 @@ The repo is a **private** GitHub repo, `dbrownems/PbiVisualExport`. The root
 
 ## ⚠️ Before making this repo public
 
-These committed files are environment-specific:
-
-1. **`src/PbiVisualExport.Web/appsettings.json`** contains real
-   `TenantId`/`WorkspaceId`/`ReportId`/`DatasetId`/`XmlaClientId` values. They
-   are IDs, not secrets, but replace them with placeholders and document that
-   users supply their own.
-2. **`tools/XmlaSmoke/Program.cs`** has hard-coded `tenant`/`datasetId` constants.
-3. **`LICENSE`** (MIT, Copyright (c) Microsoft Corporation) is already present.
+1. **App and tool config: done.** `appsettings.json` and `tools/XmlaSmoke` no
+   longer carry environment IDs; they come from user secrets or env vars (see
+   *Configuration*).
+2. **`infra/`** still has the workspace default in `deploy-model.ps1`, dataset IDs
+   in the `infra/reports/*/definition.pbir` bindings, and the Warehouse host in
+   `infra/models/DqParamTest`.
+3. **Git history**: the initial commit (`aa72a1d`) contains the old IDs. They're
+   IDs, not secrets. Squash or rewrite only if that matters, and only on explicit
+   request.
+4. **`LICENSE`** (MIT, Copyright (c) Microsoft Corporation) is already present.

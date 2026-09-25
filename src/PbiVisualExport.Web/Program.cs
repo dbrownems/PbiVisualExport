@@ -4,8 +4,19 @@ using PbiVisualExport.Web.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Configuration cascades (later wins): appsettings.json (committed defaults, no environment
+// IDs) < appsettings.{Environment}.json < user secrets (Development only - the local secret
+// store, see <UserSecretsId>) < environment variables (deployed, e.g. PowerBI__WorkspaceId)
+// < command line. CreateBuilder wires all of these; don't add providers here.
 builder.Services.Configure<AzureAdOptions>(builder.Configuration.GetSection(AzureAdOptions.SectionName));
-builder.Services.Configure<PowerBIOptions>(builder.Configuration.GetSection(PowerBIOptions.SectionName));
+builder.Services.AddOptions<PowerBIOptions>()
+    .Bind(builder.Configuration.GetSection(PowerBIOptions.SectionName))
+    .Validate(o => Guid.TryParse(o.WorkspaceId, out _),
+        $"PowerBI:WorkspaceId is not configured (environment: {builder.Environment.EnvironmentName}). " +
+        "Locally: dotnet user-secrets set PowerBI:WorkspaceId <id> --project src/PbiVisualExport.Web " +
+        "(user secrets load only in Development; dotnet run sets it via launchSettings.json). " +
+        "Deployed: set the PowerBI__WorkspaceId environment variable.")
+    .ValidateOnStart();
 builder.Services.Configure<ExportOptions>(builder.Configuration.GetSection(ExportOptions.SectionName));
 builder.Services.Configure<MetadataCacheOptions>(builder.Configuration.GetSection(MetadataCacheOptions.SectionName));
 

@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk.Web">
+﻿<Project Sdk="Microsoft.NET.Sdk.Web">
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
@@ -6,6 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>PbiVisualExport.Web</RootNamespace>
     <InvariantGlobalization>false</InvariantGlobalization>
+    <UserSecretsId>7ad05434-b6db-4caf-8ad0-a97c908c87ae</UserSecretsId>
   </PropertyGroup>
 
   <ItemGroup>

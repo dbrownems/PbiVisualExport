@@ -17,6 +17,8 @@ working set, private bytes and CPU time; per-run timelines go to <OutDir>\sample
 the summary to <OutDir>\summary.csv. The server is stopped at the end.
 
 Uses the XMLA device-code sign-in the app has cached; sign in once through the UI first.
+The server runs with --environment Development so it reads PowerBI:WorkspaceId etc. from
+user secrets (environment variables still override).
 
 .EXAMPLE
 pwsh infra/perf-export.ps1 -Request detail1-request.json
@@ -185,7 +187,7 @@ $script:server = $null
 try {
     $env:Export__EnableBenchmark = 'true'
     $env:Logging__LogLevel__PbiVisualExport = 'Debug'
-    $script:server = Start-Process $exe -ArgumentList "--urls $base" -WorkingDirectory $proj -PassThru -NoNewWindow `
+    $script:server = Start-Process $exe -ArgumentList "--urls $base --environment Development" -WorkingDirectory $proj -PassThru -NoNewWindow `
         -RedirectStandardOutput $serverLog -RedirectStandardError (Join-Path $OutDir 'server.err.log')
     $null = $script:server.Handle
     $deadline = (Get-Date).AddSeconds(60)

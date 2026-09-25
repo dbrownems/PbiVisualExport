@@ -86,6 +86,8 @@ public sealed class PbiTokenProvider
     private static void Require(string value, string name)
     {
         if (string.IsNullOrWhiteSpace(value))
-            throw new InvalidOperationException($"AzureAd:{name} is required for the selected AuthenticationMode.");
+            throw new InvalidOperationException(
+                $"AzureAd:{name} is required for the selected AuthenticationMode. Set it in user secrets " +
+                $"(dotnet user-secrets set AzureAd:{name} <value>) locally, or the AzureAd__{name} environment variable when deployed.");
     }
 }

@@ -47,8 +47,8 @@ Three pages over the StoreSales retail model:
   sort on **`Sales per Store` descending**, so the sort key is itself a report
   measure; `rmCard` card (`Sales per Store`; cards aren't offered for export).
 
-It is the default report the app embeds (`PowerBI:ReportId` in `appsettings.json`)
-because it renders a bit of everything.
+It is the default report the app embeds (`PowerBI:ReportId`, set in user secrets
+locally or `PowerBI__ReportId` when deployed) because it renders a bit of everything.
 
 ### FieldParamReport — the field-parameter report
 
