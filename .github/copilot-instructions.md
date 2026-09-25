@@ -3,136 +3,166 @@
 > Curated context for AI coding agents (GitHub Copilot, and any agent that reads
 > `.github/copilot-instructions.md` or `AGENTS.md`). Read this first, then open the
 > file named for the task in the **Task → file map** below. Keep changes surgical
-> and match existing patterns.
+> and match existing patterns. The user-facing integration guide is the root
+> [`README.md`](../README.md); keep the two consistent.
 
-> ⚠️ **Being updated for the module split.** The code is now a library
-> (`src/PbiVisualExport`) plus a sample host (`samples/PbiVisualExport.SampleHost`).
-> Endpoints moved from `/export/*` to `{prefix}/*` (sample: `/pbi-export`), and
-> `AzureAd:*` config moved to `PbiVisualExport:Credential:*`. Where this file
-> disagrees with [`AGENTS.md`](../AGENTS.md), trust `AGENTS.md`. The export
-> pipeline, DAX, TOM and PBIR sections are still accurate.
+## What this is
 
-## What this sample is
+A **module** that exports a **selected Power BI visual to CSV**, bypassing the row
+limits of the report's built-in "Export data". An existing ASP.NET Core back end
+adds it with `AddPbiVisualExport()` + `MapPbiVisualExport("/pbi-export")`, and its
+HTML front end loads the JS client (served at `{prefix}/client.js`) next to the
+`Report` it already embeds.
 
-A web service that exports a **selected Power BI visual to CSV**, bypassing the
-row limits of the report's built-in "Export data". The browser embeds a report,
-the user picks a visual, and the app reconstructs that visual's query
-server-side and streams an arbitrarily large CSV.
-
-The trick: the front end gathers the visual's fields + active filters/slicers via
-the **Power BI Client JS API** and posts them with the workspace/dataset/report
-**IDs and names**. The .NET back end loads the semantic model's metadata into a
-**TOM** model (data types, format strings, sort-by columns, M parameters), builds
-**one DAX query** (`SUMMARIZECOLUMNS` + optional `FORMAT()`), runs it over the
-workspace **XMLA endpoint** with **ADOMD.NET**, and streams the rows to CSV as they
-arrive. XMLA has none of the REST `executeQueries` row/value/byte caps, so there
-is **no paging** — a 2M-row × 30-column export is a single query (~95 s formatted,
-~82 s raw, vs ~1,220 s with the old executeQueries paging).
+The trick: the JS client gathers the visual's fields, active filters/slicers and
+sort via the **Power BI Client JS API** and posts them with the workspace and
+report **IDs**. The library resolves the dataset and all names from the workspace
+catalog, loads the semantic model's metadata into a **TOM** model (data types,
+format strings, sort-by columns, M parameters), builds **one DAX query**
+(`SUMMARIZECOLUMNS` + optional `FORMAT()`), runs it over the workspace **XMLA
+endpoint** with **ADOMD.NET**, and streams the rows to CSV as they arrive. XMLA has
+none of the REST `executeQueries` row/value/byte caps, so there is **no paging** —
+a 2M-row × 31-column export is a single query (~95 s formatted, ~86 s raw, vs
+~1,220 s with the old executeQueries paging).
 
 ## Tech stack
 
-- **.NET 10** ASP.NET Core (MVC view + Web API controllers) — `src/PbiVisualExport.Web`.
-- Front end is plain JS (`wwwroot/js/app.js`) + one Razor view (`Views/Home/Index.cshtml`) using `powerbi-client`.
-- NuGet: `Azure.Identity` (auth), `Microsoft.PowerBI.Api` (embed token, list reports/datasets),
+- **Library** `src/PbiVisualExport`: ASP.NET Core minimal-API endpoints in a class
+  library (`Microsoft.AspNetCore.App` framework reference), multi-targeting
+  **net8.0 + net10.0**, **x64 only** (packed as the `PbiVisualExport` NuGet).
+- **JS client** `src/pbi-visual-export-js`: TypeScript, built with esbuild into an
+  ESM module and an IIFE (global `PbiVisualExport`), both embedded in the library.
+  It uses the host's `powerbi-client` (+ `powerbi-report-authoring` for
+  `getDataFields`); it has no runtime dependencies of its own.
+- NuGet: `Azure.Identity` (auth),
   `Microsoft.AnalysisServices.NetCore.retail.amd64` (**TOM**, read model metadata),
-  `Microsoft.AnalysisServices.AdomdClient.NetCore.retail.amd64` (**ADOMD.NET**, the XMLA data path).
-- Infra/authoring: PowerShell + Fabric REST (`infra/`), plus two small console tools (`tools/`).
+  `Microsoft.AnalysisServices.AdomdClient.NetCore.retail.amd64` (**ADOMD.NET**, the
+  XMLA data path). Power BI REST (catalog) is called with `HttpClient`; there's no
+  `Microsoft.PowerBI.Api` dependency in the library (the sample uses it to embed).
+- **Sample host** `samples/PbiVisualExport.SampleHost` (net10.0, MVC): embedding,
+  report/visual pickers, debug panel, native-export comparison.
+- **Tests** `tests/PbiVisualExport.Tests`: xunit, net8.0 + net10.0; JS tests with
+  `node --test`.
+- Infra/authoring: PowerShell + Fabric REST (`infra/`), plus `tools/WhSql`.
 
 ## Build, run, debug
 
 ```pwsh
-# Prereq for the default dev auth mode (AzureCli): sign in first.
-az login
+az login                                                    # default dev credential (AzureCli)
+$p = 'samples/PbiVisualExport.SampleHost'
+dotnet user-secrets set PowerBI:WorkspaceId <workspace-guid> --project $p   # once
+dotnet run --project $p                                     # http://localhost:5099
 
-# Run the web app. launchSettings.json sets Development (loads user secrets) + port 5099.
-dotnet run --project src/PbiVisualExport.Web
-# open http://localhost:5099
+dotnet build PbiVisualExport.sln                            # library + sample + tests
+dotnet test tests/PbiVisualExport.Tests                     # both TFMs
+cd src/pbi-visual-export-js; npm ci; npm run build; npm test
 ```
 
-- Requires the **.NET 10 SDK**, and on first use the local settings from
-  *Configuration* below (at minimum `PowerBI:WorkspaceId` in user secrets). Without
-  it the app exits at startup with a message naming the fix.
+- Requires the **.NET 10 SDK** (with the 8.0 runtime to run the net8.0 tests) and
+  **Node 22+** for the JS client.
+- **Stop a running SampleHost before building** — it locks the library's output.
+- **`npm run build` writes `dist/` and copies the bundles to `src/PbiVisualExport/Client/pbi-visual-export.{js,mjs}`**
+  (embedded resources served at `{prefix}/client.js|.mjs`). Commit them with the TS
+  change: CI fails if the committed bundles differ from a fresh build.
 - In dev mode the **first export** asks for a one-time XMLA device-code sign-in
-  (the UI shows the code; it is also logged as `XMLA DEVICE CODE`). See
+  (the page shows the code; it is also logged as `XMLA DEVICE CODE`). See
   *XMLA credential* below.
 - **`InvariantGlobalization` is false on purpose** — DAX `FORMAT()` and CSV output
   depend on culture-aware formatting. Don't flip it to true.
-- There is **no `.sln` for the app** (the only `.sln` lives under `_sample/`, which is
-  the untouched upstream Microsoft sample — reference only, not the running app).
+- `_sample/` holds the untouched upstream Microsoft sample — reference only
+  (git-ignored).
+
+### Tests and CI
+
+- `GoldenDaxTests` compares the DAX generated for fixture requests
+  (`Fixtures.cs`: the real TMDL models in `infra/models` and PBIR reports in `infra/reports`) with
+  `Golden/*.dax`; each golden file was verified against the live model. After an
+  **intended** DAX change: `$env:UPDATE_GOLDEN=1; dotnet test tests/PbiVisualExport.Tests`,
+  review the diff, then commit. Never update goldens to paper over an unintended change.
+- `EndpointTests` host the module in `TestServer` with fakes from `TestDoubles.cs`
+  (catalog, metadata, XMLA) — no Power BI access needed.
+- `.github/workflows/ci.yml` (Windows required; Ubuntu `continue-on-error`): JS
+  build + tests + stale-bundle check, `dotnet build`/`test` (both TFMs), `dotnet
+  pack`. Versions: `VersionPrefix` (csproj) must equal `version` (package.json);
+  CI builds `{prefix}-ci.{run}`. **Release** = push tag `v{version}` → the `publish`
+  job pushes the nupkg to GitHub Packages (`nuget.pkg.github.com/dbrownems`).
 
 ## Configuration (settings cascade)
 
-Environment-specific IDs are **not committed**. `appsettings.json` holds the keys
-(with empty IDs) and non-environment defaults. The standard ASP.NET Core
-providers are layered; **later wins**:
+Environment-specific IDs are **not committed**. The sample's `appsettings.json`
+holds the keys (with empty IDs) and non-environment defaults. The standard ASP.NET
+Core providers are layered; **later wins**:
 
 | Layer | Loaded | Used for |
 |---|---|---|
 | `appsettings.json` | always | committed defaults, empty IDs |
 | `appsettings.{Environment}.json` | if present (`appsettings.Development.json` is git-ignored) | optional local tweaks |
-| **User secrets** (`<UserSecretsId>` in the csproj) | **Development only** | the local secret store: this dev box's IDs |
+| **User secrets** (`<UserSecretsId>` in the sample csproj) | **Development only** | the local secret store: this dev box's IDs |
 | **Environment variables** (`Section__Key`) | always | deployed: App Service settings, containers; Key Vault references also arrive this way |
 | Command line (`--Section:Key value`) | always | one-off overrides |
 
-`dotnet run` picks up `Properties/launchSettings.json`, which sets Development and
-port 5099. Running the built exe directly defaults to **Production**, so no user
-secrets load; pass `--environment Development` for local runs
-(`infra/perf-export.ps1` does this).
+- **Module settings** live under `PbiVisualExport` (`PbiVisualExportOptions.cs`;
+  full table in the README's *Configuration reference*). The host passes the
+  section to `AddPbiVisualExport(section, configure?)`. Options are validated at
+  startup (`PbiVisualExportOptionsValidator`, `ValidateOnStart`): the XMLA
+  endpoint, empty GUIDs in `AllowedWorkspaceIds`, non-positive ticket lifetime,
+  negative `MaxRows`, and the settings each credential mode needs (skipped when
+  the host calls `UseCredential`).
+- **Sample settings** live under `PowerBI` (`PowerBIOptions.cs`): `WorkspaceId`
+  (required, validated at startup with a message naming the fix; the sample adds
+  it to `AllowedWorkspaceIds`) and `ReportId` (optional first report).
+- `dotnet run` uses `launchSettings.json` (Development, port 5099). The built exe
+  defaults to **Production**, so no user secrets load; pass `--environment
+  Development` (`infra/perf-export.ps1` does).
 
 Local setup (values live in
 `%APPDATA%\Microsoft\UserSecrets\7ad05434-b6db-4caf-8ad0-a97c908c87ae\secrets.json`,
 outside the repo):
 
 ```pwsh
-dotnet user-secrets set PowerBI:WorkspaceId <workspace-guid> --project src/PbiVisualExport.Web
-dotnet user-secrets set AzureAd:TenantId   <tenant-guid>    --project src/PbiVisualExport.Web
-dotnet user-secrets set PowerBI:ReportId   <report-guid>    --project src/PbiVisualExport.Web  # optional
-dotnet user-secrets list --project src/PbiVisualExport.Web
+$p = 'samples/PbiVisualExport.SampleHost'
+dotnet user-secrets set PowerBI:WorkspaceId <workspace-guid> --project $p
+dotnet user-secrets set PbiVisualExport:Credential:TenantId <tenant-guid> --project $p  # optional in AzureCli mode
+dotnet user-secrets set PowerBI:ReportId <report-guid> --project $p                     # optional
 ```
 
 Deployed with a service principal (app settings or environment variables):
 
 ```
-AzureAd__AuthenticationMode = ServicePrincipal
-AzureAd__TenantId           = <tenant-guid>
-AzureAd__ClientId           = <app-registration client id>
-AzureAd__ClientSecret       = <secret>   # prefer @Microsoft.KeyVault(SecretUri=...) on App Service
-PowerBI__WorkspaceId        = <workspace-guid>
-PowerBI__ReportId           = <report-guid>   # optional
+PbiVisualExport__Credential__Mode         = ServicePrincipal
+PbiVisualExport__Credential__TenantId     = <tenant-guid>
+PbiVisualExport__Credential__ClientId     = <app-registration client id>
+PbiVisualExport__Credential__ClientSecret = <secret>   # prefer @Microsoft.KeyVault(SecretUri=...) on App Service
+PbiVisualExport__AllowedWorkspaceIds__0   = <workspace-guid>
+PowerBI__WorkspaceId                      = <workspace-guid>   # sample only
 ```
 
-(`MasterUser` uses `AzureAd__PbiUsername` / `AzureAd__PbiPassword` in place of the
-secret.)
+(`MasterUser` uses `Username` / `Password` with `ClientId` in place of the secret.)
 
-- `PowerBI:WorkspaceId` is **required** and validated at startup
-  (`ValidateOnStart` in `Program.cs`). A missing or invalid value stops the app with
-  a message giving both the user-secrets command and the env-var name.
-- `PowerBI:ReportId` is optional. When empty, the UI selects the first report in
-  the workspace.
-- `AzureAd:TenantId` is optional for `AzureCli`/`DeviceCode` and required for
-  `ServicePrincipal`/`MasterUser` (`PbiTokenProvider.Require`).
-- `AzureAd:XmlaClientId` (`cf710c6e-…`) and the Azure CLI client ID used by the
+- `Credential:XmlaClientId` (`cf710c6e-…`) and the Azure CLI client ID used by the
   tools are **Microsoft's well-known public clients**, the same in every tenant.
   They stay committed.
-- When adding a new environment-specific setting: add the key to
-  `appsettings.json` with an empty value and a `"// Key"` note, bind it in
-  `Options/Options.cs`, and document it here. Never commit the real value.
+- When adding a module setting: add it to `PbiVisualExportOptions.cs` (with an XML
+  doc comment), to the validator if it can be invalid, to the sample's
+  `appsettings.json` (with a `"// Key"` note) and to the README's configuration
+  table. Never commit a real environment value.
 
 ## Authentication model (important)
 
-All tokens come from **one `TokenCredential`** built by
-`Auth/PbiTokenProvider.cs`, selected by `AzureAd:AuthenticationMode`:
+All tokens come from **one `TokenCredential`**: the host's (`UseCredential(credential,
+xmla?)`, registered as `HostCredentials`), or one built by `Auth/PbiTokenProvider.cs`
+from `PbiVisualExport:Credential:Mode`:
 
 | Mode | Credential | Use |
 |---|---|---|
 | `AzureCli` (default) | `AzureCliCredential` | Dev "super user" — whoever ran `az login`. |
-| `ServicePrincipal` | `ClientSecretCredential` | Deployment. Needs `ClientId`/`ClientSecret`. |
+| `ServicePrincipal` | `ClientSecretCredential` | Deployment. Needs `TenantId`/`ClientId`/`ClientSecret`. |
 | `MasterUser` | `UsernamePasswordCredential` | Legacy master-user embedding. |
 | `DeviceCode` | `DeviceCodeCredential` | Headless / no browser. Watch the log for the code. |
 
 **Two token audiences, do not mix them up:**
-- **Power BI** (`https://analysis.windows.net/powerbi/api/.default`) — embedding,
-  `GenerateToken`, the report/dataset catalog, and the **XMLA** data path.
+- **Power BI** (`https://analysis.windows.net/powerbi/api/.default`) — the
+  report/dataset catalog and the **XMLA** data path (and embedding, in the sample).
 - **Fabric** (`https://api.fabric.microsoft.com/.default`) — `getDefinition`
   (the metadata path: `FabricDefinitionClient`, for semantic models and reports).
 
@@ -140,158 +170,189 @@ A Power BI-audience token will fail Fabric item calls with `InsufficientScopes`,
 and vice-versa. `PbiTokenProvider.GetPowerBiTokenAsync` / `GetFabricTokenAsync`
 already pick the right one — reuse them.
 
+The identity needs **Contributor** or higher on each workspace (`getDefinition`
+requires read + write permission on the item; it's also blocked for models with an
+encrypted sensitivity label), and the workspace needs Premium/Fabric capacity with
+**XMLA read** enabled.
+
 ### XMLA credential (`Auth/XmlaTokenProvider.cs`)
 
 The XMLA endpoint **rejects Azure CLI tokens** ("Authentication failed for all
 authenticators") even though the REST APIs accept them. So the data path has its
-own credential, chosen by `AzureAd:XmlaAuthenticationMode`:
+own credential, chosen by `PbiVisualExport:Credential:XmlaMode`:
 
 | Mode | Behaviour |
 |---|---|
 | `Auto` (default) | `DeviceCode` when the main mode is `AzureCli` (or `DeviceCode` without a `ClientId`); otherwise `Shared`. |
-| `Shared` | Reuse the main credential — the **deployment** path (`ServicePrincipal` / `MasterUser`). |
-| `DeviceCode` | Device-code sign-in with `AzureAd:XmlaClientId` (default `cf710c6e-dfcc-4fa8-a093-d47294e44c66`, the Analysis Services public client ADOMD.NET itself uses). |
+| `Shared` | Reuse the main (or host) credential — the **deployment** path. |
+| `DeviceCode` | Device-code sign-in with `Credential:XmlaClientId` (default `cf710c6e-dfcc-4fa8-a093-d47294e44c66`, the Analysis Services public client ADOMD.NET itself uses). |
 
-Dev device-code flow is **non-blocking**: the first export returns **HTTP 401**
-`{ signInRequired, verificationUri, userCode }`; the UI shows the code and polls
-`GET /export/xmla-auth` until `signedIn`, then the user re-runs the export. The
-refresh token is kept in a DPAPI-protected MSAL cache (`PbiVisualExport.Xmla`)
-plus an `AuthenticationRecord` at
+Dev device-code flow is **non-blocking**: the first export (or `prepare`) returns
+**HTTP 503** `{ error, signInRequired: true, verificationUri, userCode }`; the JS
+client raises `PbiExportError` code `signInRequired`, the page shows the code and
+calls `exporter.waitForSignIn()` (polls `GET {prefix}/xmla-auth` until
+`signedIn`), then the user re-runs the export. The refresh token is kept in an
+MSAL persistent cache (`PbiVisualExport.Xmla`) plus an `AuthenticationRecord` at
 `%LOCALAPPDATA%\PbiVisualExport\xmla-auth-record-{clientId}.json`, so later
 requests and restarts are silent. ADOMD's `OnAccessTokenExpired` re-mints tokens
 for exports that outlive one.
 
-> For `ServicePrincipal` mode the SP must (a) be enabled by the tenant setting
-> "Service principals can use Fabric/Power BI APIs" and (b) be added to the
-> workspace. Otherwise expect `Unauthorized` (tenant setting) or `RequestFailed`
-> (not in workspace).
+> For a service principal (or managed identity) the tenant setting "Service
+> principals can use Fabric APIs" must allow it (~15 min to propagate) and it must
+> be added to the workspace. Otherwise expect `Unauthorized` (tenant setting) or
+> `RequestFailed` (not in workspace).
 
 ## Architecture — export flow
 
 ```mermaid
 flowchart LR
-    A[Browser: app.js<br/>embed report, pick visual] -->|"POST /export/csv (fetch → Save As file)<br/>or /export/csv/form (browser download)<br/>{fields, filters, IDs + names}"| B[ExportController]
-    B -->|validate names ↔ IDs| P[PowerBiCatalog]
+    A["Host page + JS client<br/>listVisuals / exportVisual"] -->|"POST {prefix}/prepare → ticket<br/>GET {prefix}/download/{ticket} (iframe)<br/>or POST {prefix}/csv (Save As)"| B[ExportHandler]
+    B -->|"IDs → names, allow-list,<br/>IVisualExportAuthorizer"| P[ExportRequestResolver + PowerBiCatalog]
     B --> C[CsvExportService]
     C -->|getDefinition TMSL → TOM, cached| D[SemanticModelMetadataService]
-    C -.->|"only if a measure isn't in the model:<br/>getDefinition report (PBIR), cached"| R[ReportDefinitionService]
+    C -.->|"report measures or FieldValidation:<br/>getDefinition report (PBIR), cached"| R[ReportDefinitionService]
     C -->|build one DAX query| E[DaxQueryBuilder]
-    C -->|open ADOMD.NET| F[XmlaConnectionFactory]
+    C -->|"open ADOMD.NET<br/>(+ EffectiveIdentity)"| F[XmlaConnectionFactory]
     F -->|XMLA: workspace + model names| G[(Power BI dataset)]
     C -->|stream rows as CSV| A
+    B -->|VisualExportAuditRecord| S[IExportAuditSink]
 ```
 
 ## Repository layout
 
 ```
-src/PbiVisualExport.Web/
-  Program.cs                     DI wiring + routes (MVC + attribute-routed API)
-  appsettings.json               Keys + defaults only (IDs empty; see Configuration): AzureAd / PowerBI / Export / MetadataCache
-  Properties/launchSettings.json `dotnet run` profile: Development (loads user secrets), http://localhost:5099
-  Auth/PbiTokenProvider.cs       Credential factory + PBI/Fabric token minting
-  Auth/XmlaTokenProvider.cs      XMLA credential (Shared, or non-blocking dev device-code sign-in)
-  Options/Options.cs             AzureAdOptions, PowerBIOptions, ExportOptions, MetadataCacheOptions
-  Controllers/
-    HomeController.cs            GET /            (the embed page)
-    EmbedInfoController.cs       GET /embedinfo/reports, GET /embedinfo/getembedinfo?reportId=
-    ExportController.cs          POST /export/csv (JSON body; validates + streams), POST /export/csv/form (same, form post +
-                                 antiforgery, for browser downloads), POST /export/prepare (validate + plan, no data),
-                                 GET /export/xmla-auth, POST /export/bench (perf, off by default)
+PbiVisualExport.sln                        library + sample + tests
+src/PbiVisualExport/                       the library (NuGet)
+  PbiVisualExportServiceCollectionExtensions.cs  AddPbiVisualExport, PbiVisualExportBuilder (UseCredential,
+                                           AddAuthorizer, AddEffectiveIdentity, AddAuditSink), options validator
+  ExportEndpoints.cs                       MapPbiVisualExport route group (RequireAuthorization by default)
+  Extensibility.cs                         public seams: VisualExportContext, IVisualExportAuthorizer,
+                                           IEffectiveIdentityProvider/EffectiveIdentity, IExportAuditSink/audit record
+  PbiVisualExportOptions.cs                options (Credential, AllowedWorkspaceIds, XmlaEndpoint, Export, Downloads, MetadataCache)
+  Models.cs                                wire contract: VisualExportRequest, ExportField, ExportSort, ReadBenchmarkResult
+  README.md                                the package README (packed into the nupkg)
+  Client/pbi-visual-export.{js,mjs}        built JS client (generated by npm run build; embedded resources)
+  Auth/PbiTokenProvider.cs                 credential factory + PBI/Fabric token minting
+  Auth/XmlaTokenProvider.cs                XMLA credential (Shared, or non-blocking dev device-code sign-in)
   Services/
-    PbiEmbedService.cs           List reports + GenerateTokenV2 (embed token)
-    PowerBiCatalog.cs            Cached workspace/dataset/report ID → name lookups (validation)
-    FabricDefinitionClient.cs    Shared Fabric getDefinition POST + 202/LRO poll → decoded definition parts
-    SemanticModelMetadataService.cs  Semantic model getDefinition(TMSL) → TOM (delegates storage to MetadataCache)
-    ReportDefinitionService.cs   Report getDefinition → ReportDefinition (format, parts, reportExtensions.json measures), cached
-    MetadataCache.cs             In-memory + single-flight + on-disk cache of definitions, keyed by (kind, item id)
-    ExportRequestException.cs    Request can't be exported as sent (e.g. unknown field) → HTTP 400
-    DaxQueryBuilder.cs           VisualExportRequest + TOM → single DAX query (DaxPlan)
-    XmlaConnectionFactory.cs     Opens ADOMD.NET connections (names only) with the XMLA token
-    CsvExportService.cs          Orchestrates: metadata → DAX → XMLA reader → CSV stream
-  Models/Models.cs               VisualExportRequest, ExportField, Embed* DTOs
-  Views/Home/Index.cshtml        Toolbar (report/visual pickers, Export, debug panel), hidden download form (+ antiforgery token)
-  wwwroot/js/app.js              Embed, gather fields+filters, streamed download (Save As picker / form post), debug panel
-infra/                           Fabric authoring (see infra section)
-tools/                           WhSql (seed Warehouse)
-_sample/                         Upstream MS "Embed for your customers/AppOwnsData" clone (reference only; git-ignored)
+    ExportHandler.cs                       endpoint logic: read/resolve, prepare, stream, tickets, status, errors, audit
+    ExportRequestResolver.cs               IDs → catalog names, ID/name agreement, allow-list, authorizer → VisualExportContext
+    DownloadTickets.cs                     DownloadTicketStore (one-time tickets, status) + ExportConcurrencyLimiter
+    PowerBiCatalog.cs                      cached workspace/report/dataset lookups (REST)
+    CsvExportService.cs                    orchestrates: metadata → field validation → DAX → XMLA reader → CSV stream
+    VisualFieldValidator.cs                FieldValidation: request fields ⊆ the visual's saved PBIR fields
+    DaxQueryBuilder.cs                     VisualExportRequest + TOM (+ report measures) → single DAX query (DaxPlan)
+    FabricDefinitionClient.cs              Fabric getDefinition POST + 202/LRO poll → decoded parts
+    SemanticModelMetadataService.cs        semantic model getDefinition(TMSL) → TOM
+    ReportDefinitionService.cs             report getDefinition → ReportDefinition (format, parts, report measures)
+    MetadataCache.cs                       in-memory + single-flight + on-disk definition cache
+    XmlaConnectionFactory.cs               ADOMD.NET connections (names only) + EffectiveUserName/Roles/CustomData
+    ClientScript.cs                        serves the embedded client (ETag, no-cache)
+    ExportRequestException.cs              a request that can't be exported as sent → 400/403
+src/pbi-visual-export-js/                  the JS client (see its README)
+  src/index.ts                             createExporter / Exporter (listVisuals, buildRequest, exportVisual, menu command, sign-in)
+  src/gather.ts                            fields, filters (+ slicer/bookmark fallbacks), sort from the bookmark
+  src/transfer.ts                          Save As (File System Access) and ticket download (hidden iframe + status polling)
+  src/http.ts, errors.ts, types.ts         fetch wrapper (contract header), PbiExportError codes, public types
+  test/                                    node --test with a mocked powerbi-client
+samples/PbiVisualExport.SampleHost/        reference host (embedding is the host's job)
+  Program.cs                               the wiring (UseRouting → UseAuthorization; AllowAnonymous because no sign-in)
+  Services/PbiEmbedService.cs, Controllers/EmbedInfoController.cs   /embedinfo/reports, /embedinfo/getembedinfo?reportId=
+  Views/Home/Index.cshtml, wwwroot/js/app.js                        pickers, Export, debug panel, Native export
+tests/PbiVisualExport.Tests/               xunit (golden DAX, unit, TestServer endpoint tests)
+infra/                                     Fabric authoring (see infra section)
+tools/                                     WhSql (seed Warehouse)
+_sample/                                   upstream MS "Embed for your customers/AppOwnsData" clone (git-ignored)
 ```
 
 ## The export pipeline, file by file
 
-- **`app.js`** embeds the report, populates the **report** dropdown from
-  `/embedinfo/reports` and the **visual** dropdown from the embedded page, then on
-  *Export* gathers the visual's fields (`getCapabilities`/`getDataFields`) and all
-  active filters (visual + page + report + slicers) and sends a
-  `VisualExportRequest` (see **Download path** below). Slicers on a page that isn't rendered
-  throw `visualConfigIsNotInitialized` from `getSlicerState`, so `gatherFilters`
-  **activates the visual's page** and retries. The SDK serializer also throws on
-  some slicers (a slicer with no saved selection → `reading 'general'`); then the
-  slicer is looked up in the captured bookmark (`singleVisual.objects.merge.general[].properties.filter`):
-  no filter there = no selection, otherwise the export **aborts** (dropping a slicer
-  would silently over-export). The **debug panel** shows the exact JSON
-  payload sent to the API. **Column order** is the `getDataFields(role)` order
-  (it reflects in-session reorders). The **sort** is not exposed by any SDK getter:
-  `gatherSort` reads it from `report.bookmarksManager.capture({allPages:true})`
-  (`state` = base64 gzip JSON → `explorationState.sections[page].visualContainers[visual].singleVisual.orderBy[]`).
-  That array holds the live sort **and** the saved PBIR `sortDefinition`; if it's
-  absent the visual has no explicit sort. A **Sort like visual** checkbox sets
-  `applySort`. A **Format values** checkbox sets `applyFormatStrings`;
-  a **Native export** button runs `visual.exportData(Summarized, 2000)` for a quick
-  side-by-side comparison with Power BI's own export (the service caps it at 30k
-  rows, but 30k on a wide visual can run for many minutes). On a 401
-  `signInRequired` it shows the XMLA device code and polls `/export/xmla-auth`.
-- **Download path** (`doExport` in `app.js`). The browser never buffers the file,
-  and `fetch()` ignores `Content-Disposition`, so there are two paths:
-  1. **`showSaveFilePicker` (Chromium)**: called *first*, while the click still
-     counts as a user gesture, so the user gets a real Save As dialog. Then
-     `fetch POST /export/csv` and `resp.body.pipeTo(handle.createWritable())`,
-     with KB/MB progress and in-page errors. Cancelling the dialog is
-     "Export cancelled.". On failure the picked file is removed only if it is
-     still empty (`discardFile`).
-  2. **Fallback** (no picker, or it throws `SecurityError`, e.g. in a
-     cross-origin frame):
-     - `POST /export/prepare` pre-flights validation, planning and the XMLA
-       token as JSON, so errors and the sign-in flow still show in the page.
-     - Then the hidden `#download-form` (antiforgery token + `request` JSON +
-       `downloadToken`) is submitted into a hidden iframe. The browser's
-       download manager applies `Content-Disposition` and streams to disk. Save
-       As only appears if the browser's "ask where to save" setting is on.
-     - Download started: the server sets cookie `pbiexport-dl-{token}=1` with
-       the response headers, and the page polls `document.cookie` for it.
-     - Error: a download never fires the iframe `load` event, but an error
-       response does. The page then reads the iframe's JSON body.
-     - A successful frame is kept, because removing it could cancel the
-       download in some browsers.
-- **`ExportController`**: `ExportCsv` (`[FromBody]`) and `ExportCsvForm` (form
-  field `request` = the same JSON, `[ValidateAntiForgeryToken]` because a form
-  post is CSRF-able; a JSON post isn't, without CORS) share `StreamCsvAsync`:
-  - It validates the request (below).
-  - It sets `Content-Disposition` via
-    `ContentDispositionHeaderValue.SetHttpFileName`: ASCII `filename=` +
-    UTF-8 `filename*`. Kestrel rejects non-ASCII header values, so a raw
-    title would 500.
-  - For a valid `downloadToken` (`[A-Za-z0-9_-]{1,64}`) it sets the
-    download-started cookie.
-  - Then it delegates to `CsvExportService.ExportAsync`, which writes directly
-    to `Response.Body`.
-  - Errors before the first row → clean JSON 400/401/500 (`Response.Clear()`
-    also drops the cookie). Errors mid-stream abort the connection (never a
-    silently truncated file).
-  - `Prepare` runs validation, `CsvExportService.PlanAsync` (cached metadata +
-    DAX build) and the XMLA token check, and returns
-    `{fileName, columns, sort, reportMeasures, measureFilters, warnings}`.
-  - An `ExportRequestException` from planning (a field that's in neither the
-    model nor the report's measures, a non-PBIR report, a visual with no
-    exportable fields) → **400** `{error}` from `csv`, `csv/form`, `prepare` and
-    `bench`.
-  - `Program.cs` sets `AddAntiforgery(SuppressXFrameOptionsHeader = true)` so
-    the page can still be framed by a host app.
-- **Request validation**: all six identifiers are required. IDs must be GUIDs, the
-  workspace must be the configured `PowerBI:WorkspaceId`, each **name must match
-  its ID** (case-insensitive, via `PowerBiCatalog`, 10-min cache, one forced refresh
-  on a miss), and the report must be bound to the dataset. This matters because
-  metadata is fetched **by ID** (Fabric) but data **by name** (XMLA) — a mismatch
-  would silently mix two models.
+- **JS client** (`src/pbi-visual-export-js`). `createExporter({ report, apiBase,
+  headers?, credentials? })` works with the host's embedded `Report`:
+  - `listVisuals()` lists exportable visuals on visible pages (skipping
+    `SKIP_VISUAL_TYPES`: textbox, image, shape, actionButton, basicShape, card,
+    bookmarkNavigator, filter).
+  - `buildRequest(visual, { formatted, sort })` → `VisualExportRequest`:
+    - **Fields** (`gatherFields`): `getCapabilities` + `getDataFields(role)` per
+      role, in role order — which reflects in-session reorders. `hidden: true` =
+      hidden on the visual.
+    - **Filters** (`gatherFilters`): visual + page + report filters + the page's
+      slicer states. Slicers on a page that isn't rendered throw
+      `visualConfigIsNotInitialized`, so the client **activates the visual's page**
+      and retries. The SDK serializer also throws on some slicers (no saved
+      selection → `reading 'general'`; "select all" slicers have been reported to throw `slicerSerializationFailed`);
+      the slicer is then looked up in the captured bookmark
+      (`singleVisual.objects.merge.general[].properties.filter`): no filter there =
+      no selection, otherwise the export **aborts** (dropping a slicer would silently
+      over-export).
+    - **Sort** (`gatherSort`): not exposed by any SDK getter, so it's read from
+      `report.bookmarksManager.capture({allPages:true})` (`state` = base64 gzip JSON
+      → `explorationState.sections[page].visualContainers[visual].singleVisual.orderBy[]`).
+      That array holds the live sort **and** the saved PBIR `sortDefinition`; absent =
+      no explicit sort. Hierarchy-level keys are skipped.
+    - `formatted` (default true) → `applyFormatStrings`; `sort` (default **false**) →
+      `applySort`.
+  - `exportVisual(visual, { target })` transfers the file without buffering it:
+    - `file` (`showSaveFilePicker`, Chromium): called *first*, while the click still
+      counts as a user gesture → real Save As dialog, then `fetch POST csv` and
+      `resp.body.pipeTo(writable)`. Dismissing the dialog resolves `{ status: "cancelled" }`; an `AbortSignal` rejects with code `aborted`. On failure
+      the picked file is removed only if still empty (`discardFile`).
+    - `download`: `POST prepare` (validation, planning, XMLA token — errors and the
+      sign-in flow surface as JSON), then a hidden iframe navigates to
+      `download/{ticket}`; the browser's download manager applies
+      `Content-Disposition`. Progress/outcome come from polling
+      `download/{ticket}/status`. The frame is kept (removing it can cancel the
+      download).
+    - `auto` (default): `file` where available, else `download`.
+  - `addVisualMenuCommand()` adds "Export all data (CSV)" to visual context menus
+    (replaces `settings.extensions`); menu clicks have no user gesture, so they always
+    use `download`.
+  - Every response carries `X-PbiVisualExport-Contract`; the client warns (via
+    `onWarning`) only when it's present and differs from its own version.
+- **`ExportHandler`** (behind `MapPbiVisualExport`):
+  - `csv` and `prepare` read the JSON body (415 unless `application/json` — the
+    CSRF guard), then `ExportRequestResolver.ResolveAsync` (below).
+  - `prepare` also runs `CsvExportService.PlanAsync` (cached metadata, field
+    validation, DAX build) and the XMLA token check, checks the per-user concurrency
+    limit, and issues a ticket: `{ fileName, columns, sort, reportMeasures,
+    measureFilters, warnings, ticket, ticketExpiresInSeconds, workspaceName,
+    datasetId, datasetName, reportName }`.
+  - `download/{ticket}` is anonymous (a navigation can't send auth headers); the
+    ticket is single-use, expires after `Downloads:TicketLifetimeSeconds`, and is
+    bound to the user key of `prepare` — an authenticated download by someone else
+    is 403. Status is kept for `StatusRetentionMinutes`. Tickets are **in memory**
+    (multiple instances need session affinity).
+  - `StreamAsync` (shared by `csv` and `download`): concurrency lease (429), then
+    `Content-Disposition` via `ContentDispositionHeaderValue.SetHttpFileName` (ASCII
+    `filename=` + UTF-8 `filename*`; Kestrel rejects raw non-ASCII header values),
+    `Cache-Control: no-store`, `nosniff`, and `CsvExportService.ExportAsync` straight
+    into `Response.Body`. Errors before the first byte → clean JSON 400/403/503/500
+    (`Response.Clear()`); errors mid-stream rethrow and **abort the connection**
+    (never a silently truncated file). Every stream ends with an audit record to all
+    `IExportAuditSink`s (failures logged and ignored).
+  - User key: `user:{oid | objectidentifier | nameidentifier | sub | name}` claim,
+    else `anon:{remote IP}`.
+  - An `ExportRequestException` from planning (a field that's in neither the model
+    nor the report's measures, a non-PBIR report with report measures, a visual with
+    no exportable fields) → **400** `{error}`; field validation → **403**
+    `{error, problems}`.
+- **`ExportRequestResolver`**: `workspaceId` and `reportId` are required GUIDs.
+  The workspace must be in `AllowedWorkspaceIds` (when non-empty) → else 403. The
+  report is looked up in the workspace catalog (`PowerBiCatalog`, cached), which
+  supplies the **dataset ID** and the **workspace, dataset and report names**; any
+  of those the client sent must match (case-insensitive) or it's a 400. This matters
+  because metadata is fetched **by ID** (Fabric) but data **by name** (XMLA) — a
+  mismatch would silently mix two models. Then `IVisualExportAuthorizer`
+  (default `AllowListAuthorizer`: an empty list denies everything) → 403 on deny.
+- **`VisualFieldValidator`** (`Export:FieldValidation`, default `Strict`): loads the
+  (cached) report definition and requires the request's page + visual to exist in
+  the **saved PBIR** definition, and every output field to be one of that visual's
+  fields (same column, measure, or aggregation of a column, in any role, including
+  `fieldParameters`). Otherwise 403 — so a caller can't use the module's identity to
+  read arbitrary columns. Sort keys outside the visual (and its saved sort) are
+  dropped with a warning. A miss triggers one refresh-on-miss. `PbirOnly` exports
+  PBIR-Legacy reports unchecked; `Off` trusts the request. Filters are never
+  restricted (they only narrow rows).
 - **`CsvExportService`** plans the query (`PlanAsync`, see **Report-level
   measures** below), opens an ADOMD.NET connection via `XmlaConnectionFactory`, runs the **single**
   query with `ExecuteReader`, writes a UTF-8 (BOM) header row, and streams each row,
@@ -351,7 +412,7 @@ _sample/                         Upstream MS "Embed for your customers/AppOwnsDa
     - Filter cards with no conditions (`conditions: []`, `itemCount: 0`) are ignored.
       A filter measure must exist in the model or the report's measures (report
       measures are defined via `DEFINE MEASURE` like visual ones), else **400**.
-      `/export/prepare` returns the applied value/Top N filters as `measureFilters`.
+      `prepare` returns the applied value/Top N filters as `measureFilters`.
     - Cost: `_vf` must be materialized before the first row. On 2M × 31 `detail1`
       with a filter-only `[Total Sales] > 100`: first byte 9.8 s vs 1.2 s, total
       96.2 s vs 92.4 s (still = read time); memory unchanged.
@@ -360,7 +421,7 @@ _sample/                         Upstream MS "Embed for your customers/AppOwnsDa
     - **Hierarchy** targets (hierarchy slicers `filterType 9`, tuple filters
       `filterType 6`) are skipped with a warning (a known gap).
 - **`XmlaConnectionFactory`** — XMLA addresses by **name only**:
-  `Data Source = {PowerBI:XmlaEndpoint}/{workspace name}`, `Initial Catalog =
+  `Data Source = {PbiVisualExport:XmlaEndpoint}/{workspace name}`, `Initial Catalog =
   {semantic model name}` (GUIDs are rejected). Workspace needs Premium/Fabric
   capacity with XMLA read enabled.
 - **`FabricDefinitionClient`** POSTs Fabric `.../{itemPath}/getDefinition[?format=]`
@@ -382,7 +443,7 @@ _sample/                         Upstream MS "Embed for your customers/AppOwnsDa
   report-design features) and, for PBIR only, the `reportExtensions.json` measures.
 - **`MetadataCache`** avoids re-downloading definitions on every export. Keyed by
   **(kind, item id)**; three layers, all governed by `MetadataCacheOptions`
-  (`MetadataCache` config section): (1) in-process parsed value (`TOM.Model` /
+  (`PbiVisualExport:MetadataCache` config section): (1) in-process parsed value (`TOM.Model` /
   `ReportDefinition`); (2) **single-flight** — a per-key `SemaphoreSlim` so
   concurrent misses download once; (3) **on disk** — the raw text is persisted
   (`%TEMP%\pbivisualexport-metadata-cache\{id:N}.{kind}.json`, i.e. `….tmsl.json`
@@ -423,21 +484,24 @@ _sample/                         Upstream MS "Embed for your customers/AppOwnsDa
 
 ## Front-end → back-end contract
 
-`POST /export/csv` and `POST /export/prepare` body = `VisualExportRequest`
-(`Models/Models.cs`). `POST /export/csv/form` takes the same JSON as the
-`request` form field, plus `__RequestVerificationToken` and an optional
-`downloadToken`:
+`POST {prefix}/csv` and `POST {prefix}/prepare` body = `VisualExportRequest`
+(`Models.cs`, contract version `ExportHandler.ContractVersion` = `1`, sent as the
+`X-PbiVisualExport-Contract` response header; the JS client has the same constant
+in `http.ts`). The TS mirror is `src/pbi-visual-export-js/src/types.ts` — change
+both together, and bump the version on a breaking wire change.
 
 ```jsonc
 {
-  "workspaceId": "...", "workspaceName": "PbiVisualExport",
-  "datasetId": "...",   "datasetName": "DqParamReport",
-  "reportId": "...",    "reportName": "DqParamReport",
-  "visualName": "table1", "visualTitle": "DQ Sales",
+  "workspaceId": "...",        // required
+  "reportId": "...",           // required
+  "datasetId": "...",          // optional; resolved from the report (checked if sent)
+  "workspaceName": "...", "datasetName": "...", "reportName": "...",  // optional; checked if sent
+  "pageName": "ReportSection1", "visualName": "table1",   // required under FieldValidation Strict
+  "visualTitle": "DQ Sales",   // file name
   "fields": [
-    { "table": "Sales", "column": "Category" },
-    { "table": "Sales", "measure": "Total Amount" },
-    { "table": "Sales", "column": "Amount", "aggregation": "Sum" },
+    { "table": "Sales", "column": "Category", "role": "Values" },
+    { "table": "Sales", "measure": "Total Amount", "role": "Values" },
+    { "table": "Sales", "column": "Amount", "aggregation": "Sum", "role": "Values" },
     { "table": "Sales", "measure": "Margin %", "hidden": true }  // hidden on the visual
   ],
   "filters": [ /* raw Power BI IFilter objects, parsed server-side */ ],
@@ -445,21 +509,21 @@ _sample/                         Upstream MS "Embed for your customers/AppOwnsDa
     { "table": "Sales", "measure": "Total Amount", "direction": "Descending" },
     { "table": "Sales", "column": "Amount", "aggregation": "Sum", "direction": "Ascending" }
   ],
-  "applySort": true,           // false = no ORDER BY (fastest first byte on huge exports)
-  "applyFormatStrings": true   // false = raw typed values
+  "applySort": true,           // server default true; the JS client sends false unless sort: true
+  "applyFormatStrings": true,  // false = raw typed values
+  "sortSource": "bookmark"     // diagnostic only (ignored by the server)
 }
 ```
-
-- IDs **and** names are all required (see *Request validation*). The front end
-  gets names from `/embedinfo/getembedinfo` (`workspaceName`, `datasetName`, report name).
 
 - An `ExportField` is a **column** (`column`), a **measure** (`measure`), or a
   **column + implicit aggregation** (`column` + `aggregation`). `Header` is an
   optional server-side display override. `hidden` = hidden on the visual (computed,
   not output); model-hidden fields need no flag.
-- Embed-token response uses **`accessToken`** (not `embedToken`). The reports list
-  route is **`/embedinfo/reports`**; the token route is
-  **`/embedinfo/getembedinfo?reportId=`** — note the `getembedinfo` segment.
+- Responses and status codes are listed in the README (*Endpoints and request
+  contract*) and in the `ExportHandler` class comment.
+- Sample-only routes (not part of the module): `/embedinfo/reports` and
+  `/embedinfo/getembedinfo?reportId=` (note the `getembedinfo` segment); the
+  embed-token response uses **`accessToken`** (not `embedToken`).
 
 ## Infra & Fabric authoring (`infra/`)
 
@@ -515,9 +579,9 @@ _sample/                         Upstream MS "Embed for your customers/AppOwnsDa
   checks need the full 2M.
 - **`perf-export.ps1 -Request req.json [-Rows 100000,1000000,0] [-Formats formatted,raw] [-Sort] [-Repeat n]`**
   benchmarks the export against a read-only pass over the same XMLA query. It builds
-  and starts the Release app on port 5098 with `Export:EnableBenchmark=true`, then
-  interleaves `POST /export/bench` (execute + read every value, write nothing) and
-  `POST /export/csv` (streamed to disk by curl), sampling the server's working set,
+  and starts the Release sample on port 5098 with `PbiVisualExport:Export:EnableBenchmark=true`, then
+  interleaves `POST /pbi-export/bench` (execute + read every value, write nothing) and
+  `POST /pbi-export/csv` (streamed to disk by curl), sampling the server's working set,
   private bytes and CPU. `-Rows N` adds `Orders[Row Id] <= N` (0 = all). Output
   (summary, per-run timelines, server log) goes to `%TEMP%\pbiexport-perf`. Uses
   the app's cached XMLA device-code sign-in, so sign in through the UI once first.
@@ -552,35 +616,50 @@ _sample/                         Upstream MS "Embed for your customers/AppOwnsDa
 
 | I want to change… | Start in |
 |---|---|
-| How fields/filters are gathered in the browser | `wwwroot/js/app.js` (+ `Views/Home/Index.cshtml`) |
-| The generated DAX (grouping, format strings, filters) | `Services/DaxQueryBuilder.cs` |
-| CSV shape / streaming / row caps / raw value text | `Services/CsvExportService.cs` (+ `Options/Options.cs` `Export`) |
-| XMLA connection / addressing | `Services/XmlaConnectionFactory.cs` (+ `PowerBI:XmlaEndpoint`) |
-| Request validation (IDs ↔ names) | `Controllers/ExportController.cs`, `Services/PowerBiCatalog.cs` |
+| How fields/filters/sort are gathered in the browser | `src/pbi-visual-export-js/src/gather.ts` (then `npm run build`, commit the bundles) |
+| Browser transfer (Save As / ticket download), client API | `src/pbi-visual-export-js/src/transfer.ts`, `index.ts`, `types.ts` |
+| The generated DAX (grouping, format strings, filters) | `Services/DaxQueryBuilder.cs` (+ `Golden/*.dax`, `UPDATE_GOLDEN=1`) |
+| CSV shape / streaming / row caps / raw value text | `Services/CsvExportService.cs` (+ `PbiVisualExportOptions.cs` `Export`) |
+| Endpoints, status codes, tickets, audit | `ExportEndpoints.cs`, `Services/ExportHandler.cs`, `Services/DownloadTickets.cs` |
+| Request validation (IDs ↔ names, allow-list, authorizer) | `Services/ExportRequestResolver.cs`, `Services/PowerBiCatalog.cs` |
+| Which fields a caller may export | `Services/VisualFieldValidator.cs` (`Export:FieldValidation`) |
+| Host extensibility (authorizer, RLS identity, audit) | `Extensibility.cs`, `PbiVisualExportServiceCollectionExtensions.cs` |
+| Options / validation | `PbiVisualExportOptions.cs`, `PbiVisualExportOptionsValidator` (+ sample `appsettings.json`, README table) |
+| XMLA connection / addressing / effective identity | `Services/XmlaConnectionFactory.cs` (+ `XmlaEndpoint`) |
 | Metadata read (data types, M params, TOM) | `Services/SemanticModelMetadataService.cs` (download) / `Services/MetadataCache.cs` (caching) / `Services/FabricDefinitionClient.cs` (getDefinition + LRO) |
 | Report-level measures / report definition | `Services/ReportDefinitionService.cs` (download, parse), `CsvExportService.PlanAsync` (resolution), `DaxQueryBuilder` (`DEFINE MEASURE`) |
-| Auth mode / token audiences | `Auth/PbiTokenProvider.cs` (+ `AzureAd` config) |
-| XMLA credential / device-code sign-in | `Auth/XmlaTokenProvider.cs` (+ `AzureAd:XmlaAuthenticationMode`, `XmlaClientId`) |
+| Auth mode / token audiences | `Auth/PbiTokenProvider.cs` (+ `PbiVisualExport:Credential`) |
+| XMLA credential / device-code sign-in | `Auth/XmlaTokenProvider.cs` (+ `Credential:XmlaMode`, `XmlaClientId`) |
 | Large test table / report | `infra/generate-large-export.py` (then redeploy), `infra/compare-exports.py` |
-| Export throughput / memory | `infra/perf-export.ps1`, `CsvExportService.ReadOnlyAsync` (`POST /export/bench`) |
-| Browser download (Save As / form post) | `wwwroot/js/app.js` (`doExport`, `exportToFile`, `exportViaForm`), `ExportController` (`csv/form`, `prepare`) |
-| Report list / embed token | `Services/PbiEmbedService.cs`, `Controllers/EmbedInfoController.cs` |
-| Request/response shapes | `Models/Models.cs` |
+| Export throughput / memory | `infra/perf-export.ps1`, `CsvExportService.ReadOnlyAsync` (`POST {prefix}/bench`) |
+| Sample page, report list / embed token | `samples/PbiVisualExport.SampleHost` (`wwwroot/js/app.js`, `Services/PbiEmbedService.cs`, `Controllers/EmbedInfoController.cs`) |
+| Tests / CI / packaging | `tests/PbiVisualExport.Tests`, `src/pbi-visual-export-js/test`, `.github/workflows/ci.yml`, library csproj |
 | Deploy a model/report to Fabric | `infra/deploy-model.ps1` |
 
 ## Conventions
 
-- **DI**: register services in `Program.cs`. Tokens (`PbiTokenProvider`,
-  `XmlaTokenProvider`), `XmlaConnectionFactory`, `PowerBiCatalog`, metadata/cache
-  and the DAX builder are singletons; per-request services (`PbiEmbedService`,
-  `CsvExportService`) are scoped. Follow that split.
-- Nullable + implicit usings are **on**. Prefer `sealed` classes and records for
-  DTOs (matches existing style).
-- Config is strongly typed via `IOptions<T>` — add new settings to `Options/Options.cs`
-  and bind in `Program.cs`, don't read `IConfiguration` ad hoc.
-- Keep secrets out of source. Runtime IDs (workspace/report/dataset) live in config.
+- **Public surface stays small**: implementation types are `internal` (tests see
+  them via `InternalsVisibleTo`). Hosts use the DI/endpoint extensions, the options
+  and the `Extensibility.cs` seams. Adding public API = README + package README.
+- **DI**: library services are registered in `AddPbiVisualExport` with `TryAdd*`
+  (so a host or test can replace them): tokens, `XmlaConnectionFactory`, catalog,
+  metadata/cache, DAX builder, tickets and limiter are singletons; the resolver,
+  `CsvExportService` and `ExportHandler` are scoped. Follow that split. Never
+  register library services in the sample.
+- Nullable + implicit usings are **on**; warnings should stay at zero. Prefer
+  `sealed` classes and records for DTOs (matches existing style).
+- Config is strongly typed via `IOptions<PbiVisualExportOptions>` — add settings
+  there, don't read `IConfiguration` ad hoc.
+- Keep secrets and environment IDs out of source.
+- Validate real changes by running the sample and exporting a visual (compare with
+  the **Native export** button / `infra/compare-exports.py`), plus the tests —
+  don't just eyeball generated DAX.
 
 ## Known limitations / good first issues
+
+Integration-level gaps (in-memory tickets, paths not yet verified live, sensitivity
+labels) are tracked in the README's *Known gaps* table; the DAX/filter gaps are
+detailed here.
 
 - **Report-level measures** are supported for **PBIR (enhanced format)** reports
   only; a visual using a measure the model lacks, on a PBIR-Legacy report, fails
@@ -639,7 +718,7 @@ are expected, **by design** differences:
 
 ### Performance (measured with `infra/perf-export.ps1`, LargeExportReport `detail1`)
 
-Release build, `applySort: false` unless noted; *read* = `POST /export/bench`
+Release build, `applySort: false` unless noted; *read* = `POST {prefix}/bench`
 (same query, every value read, nothing written); memory = peak of the server
 process during the run.
 

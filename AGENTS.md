@@ -3,7 +3,8 @@
 Guidance for AI coding agents working in this repo. The **full** curated context
 lives in [`.github/copilot-instructions.md`](.github/copilot-instructions.md) —
 read it for architecture, the export pipeline, auth, TMDL/Fabric notes, and the
-task→file map. This file is the quick start.
+task→file map. **Integrators** (adding the module to a host app) should read
+[`README.md`](README.md). This file is the quick start.
 
 ## What it is
 
@@ -21,7 +22,9 @@ az login                                   # default credential mode is AzureCli
 $p = 'samples/PbiVisualExport.SampleHost'
 dotnet user-secrets set PowerBI:WorkspaceId <workspace-guid> --project $p   # once
 dotnet run --project $p                    # launchSettings: Development, http://localhost:5099
-dotnet build PbiVisualExport.sln           # library (net8.0 + net10.0) + sample
+dotnet build PbiVisualExport.sln           # library (net8.0 + net10.0) + sample + tests
+dotnet test PbiVisualExport.sln            # offline unit/golden/endpoint tests (no Power BI)
+cd src/pbi-visual-export-js; npm ci; npm test; npm run build   # JS client (build copies bundles into the library)
 ```
 
 Requires the **.NET 10 SDK** (the library also targets net8.0). In dev mode the
@@ -42,7 +45,7 @@ ASP.NET Core app adds with `services.AddPbiVisualExport(config)` +
 `app.MapPbiVisualExport("/pbi-export")`, plus a JS client bundle (embedded in the
 library and served at `{prefix}/client.js`). The sample host shows the wiring.
 
-- `PbiVisualExport.sln` — library + sample.
+- `PbiVisualExport.sln` — library + sample + tests.
 - `src/PbiVisualExport/` — the library (multi-targets net8.0/net10.0).
   - `PbiVisualExportServiceCollectionExtensions.cs` — DI (`AddPbiVisualExport`,
     builder: `UseCredential`, `AddAuthorizer`, `AddEffectiveIdentity`, `AddAuditSink`) + options validation.
@@ -53,6 +56,8 @@ library and served at `{prefix}/client.js`). The sample host shows the wiring.
   - `Services/ExportHandler.cs` — endpoint logic (streaming, tickets, errors, audit).
   - `Services/ExportRequestResolver.cs` — validates a request (workspace allow-list,
     ID/name agreement, authorizers) before any data is read.
+  - `Services/VisualFieldValidator.cs` — checks requested fields against the saved
+    visual in the report definition (`Export:FieldValidation`, default `Strict`).
   - `Services/DownloadTickets.cs` — one-time download tickets + concurrency limiter.
   - `Services/DaxQueryBuilder.cs` — request + TOM → single DAX query (the core logic).
   - `Services/SemanticModelMetadataService.cs` — Fabric `getDefinition(TMSL)` → TOM.
@@ -63,6 +68,12 @@ library and served at `{prefix}/client.js`). The sample host shows the wiring.
   - `Services/PowerBiCatalog.cs` — cached ID → name lookups (REST, no SDK dependency).
   - `Auth/PbiTokenProvider.cs` — one credential, PBI vs Fabric token audiences.
   - `Auth/XmlaTokenProvider.cs` — XMLA credential (`Shared` for SP, device code in dev).
+  - `Client/` — the **generated** JS bundles (embedded resources; don't hand-edit).
+- `src/pbi-visual-export-js/` — the TypeScript client (`createExporter`, `listVisuals`,
+  `buildRequest`, `exportVisual`); esbuild → `dist/` + `src/PbiVisualExport/Client/`.
+- `tests/PbiVisualExport.Tests/` — xUnit: DAX builder + golden `.dax` files
+  (`UPDATE_GOLDEN=1` to regenerate), resolver, validator, tickets, options, endpoints
+  (`WebApplicationFactory` with fakes). Fixtures load from `infra/models`/`infra/reports`.
 - `samples/PbiVisualExport.SampleHost/` — reference host (embedding is the host's job).
   - `Program.cs` — the wiring; note `UseRouting()` → `UseAuthorization()` order.
   - `Services/PbiEmbedService.cs`, `Controllers/EmbedInfoController.cs` —
@@ -82,12 +93,14 @@ library and served at `{prefix}/client.js`). The sample host shows the wiring.
 - **Two token audiences, don't mix**: Power BI (`analysis.windows.net/powerbi/api`)
   for embedding, the catalog and XMLA; Fabric (`api.fabric.microsoft.com`) for
   `getDefinition`. Use `PbiTokenProvider.GetPowerBiTokenAsync` / `GetFabricTokenAsync`.
-- **Export requests carry IDs *and* names** (workspace, dataset, report): metadata
-  is fetched by ID, data by name over XMLA. `ExportRequestResolver` fills missing
-  names and validates that they agree — keep that check when changing the contract.
+- **Only `workspaceId` + `reportId` are required** in a request: metadata is fetched
+  by ID, data by name over XMLA. `ExportRequestResolver` resolves the dataset and
+  names from the catalog and rejects (400) any ID/name the client sent that
+  disagrees — keep that check when changing the contract.
 - **Keep the library's public surface small**: implementation types are
   `internal`; hosts use the DI/endpoint extensions, options and `Extensibility.cs`
-  seams. Bump `ExportHandler.ContractVersion` on breaking wire changes.
+  seams. Bump `ExportHandler.ContractVersion` (and the JS `CONTRACT_VERSION`) on
+  breaking wire changes; keep `Models.cs` and the client's `types.ts` in sync.
 - **Keep changes surgical** and match existing style: `sealed` types, records for
   DTOs, nullable on, strongly-typed options (add to `PbiVisualExportOptions.cs`).
 - **Don't** enable `InvariantGlobalization` — DAX `FORMAT()`/CSV rely on culture.
@@ -96,6 +109,11 @@ library and served at `{prefix}/client.js`). The sample host shows the wiring.
 - Validate real changes by running the app and exporting a visual (compare with the
   **Native export** button / `infra/compare-exports.py`) — don't just eyeball
   generated DAX. For type/format checks ~2,000 rows is enough.
+- **JS changes**: run `npm run build` and commit the regenerated
+  `src/PbiVisualExport/Client/*` bundles — CI rebuilds them and fails on a diff.
+- **DAX changes**: expect golden-file diffs; review them, then `UPDATE_GOLDEN=1 dotnet test`.
+- CI (`.github/workflows/ci.yml`) builds/tests on windows + ubuntu, and a `v*` tag
+  packs and publishes the NuGet package to GitHub Packages.
 - PBIR: never set `"active": true` on a `tableEx` projection (the table renders
   only that column). See `infra/reports/README.md`.
 
