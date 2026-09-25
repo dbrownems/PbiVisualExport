@@ -1,0 +1,7 @@
+// columns: c0=Fields | c1=Total Amount (measure) | c2=Total Quantity (measure)
+// sort: Fields ASC (visual sort)
+DEFINE
+  VAR _summ = SUMMARIZECOLUMNS('Fields'[Fields], 'Fields'[Fields Fields], 'Fields'[Fields Order], "m_0", [Total Amount], "m_1", [Total Quantity])
+EVALUATE
+SELECTCOLUMNS(_summ, "c0", 'Fields'[Fields], "c1", FORMAT([m_0], "\$#,0.00;(\$#,0.00);\$#,0.00"), "c2", FORMAT([m_1], "#,0"), "s0", 'Fields'[Fields Order])
+ORDER BY [s0] ASC

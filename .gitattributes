@@ -1,0 +1,4 @@
+# Generated client bundles are embedded in the assembly (their hash is the ETag) and
+# regenerated in CI, so keep them byte-identical on every OS.
+src/PbiVisualExport/Client/* text eol=lf
+tests/**/Golden/*.dax text eol=lf

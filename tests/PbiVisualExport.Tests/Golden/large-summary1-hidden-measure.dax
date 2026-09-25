@@ -1,0 +1,7 @@
+// columns: c0=Region | c1=Category | c2=Sum of Quantity (measure) | c3=Avg of Unit Price (measure) | c4=Total Sales (measure) | c5=Avg Discount (measure)
+// sort: Region ASC, Category ASC (implicit default)
+DEFINE
+  VAR _summ = SUMMARIZECOLUMNS('Orders'[Region], 'Orders'[Category], "m_0", SUM('Orders'[Quantity]), "m_1", AVERAGE('Orders'[Unit Price]), "m_2", [Total Sales], "m_3", [Avg Discount], "m_4", [Return Rate])
+EVALUATE
+SELECTCOLUMNS(_summ, "c0", 'Orders'[Region], "c1", 'Orders'[Category], "c2", FORMAT([m_0], "#,0"), "c3", FORMAT([m_1], "\$#,0.00;(\$#,0.00);\$#,0.00"), "c4", FORMAT([m_2], "\$#,0.00;(\$#,0.00);\$#,0.00"), "c5", FORMAT([m_3], "0.00%"))
+ORDER BY [c0] ASC, [c1] ASC

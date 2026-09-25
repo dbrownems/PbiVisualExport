@@ -1,0 +1,13 @@
+// columns: c0=Chain | c1=Store Type | c2=TotalSales (measure) | c3=Sales per Store (measure) | c4=Sales per Store (K) (measure)
+// sort: Sales per Store DESC (visual sort)
+// report measures: Sales per Store, Sales per Store (K)
+DEFINE
+  MEASURE 'Sales'[Sales per Store] =
+    DIVIDE ( [TotalSales], [Total Stores] )
+  MEASURE 'Sales'[Sales per Store (K)] =
+    // report measure built on another report measure
+[Sales per Store] / 1000
+  VAR _summ = SUMMARIZECOLUMNS('Store'[Chain], 'Store'[Store Type], "m_0", [TotalSales], "m_1", [Sales per Store], "m_2", [Sales per Store (K)])
+EVALUATE
+SELECTCOLUMNS(_summ, "c0", 'Store'[Chain], "c1", 'Store'[Store Type], "c2", FORMAT([m_0], "\$#,0;(\$#,0);\$#,0"), "c3", FORMAT([m_1], "\$#,0.00;(\$#,0.00);\$#,0.00"), "c4", FORMAT([m_2], "\$#,0.0""K"""), "s0", [m_1])
+ORDER BY [s0] DESC

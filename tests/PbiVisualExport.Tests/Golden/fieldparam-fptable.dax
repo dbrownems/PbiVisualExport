@@ -1,0 +1,7 @@
+// columns: c0=Category | c1=Total Amount (measure) | c2=Total Quantity (measure)
+// sort: Category ASC (implicit default)
+DEFINE
+  VAR _summ = SUMMARIZECOLUMNS('Product'[Category], "m_0", [Total Amount], "m_1", [Total Quantity])
+EVALUATE
+SELECTCOLUMNS(_summ, "c0", 'Product'[Category], "c1", FORMAT([m_0], "\$#,0.00;(\$#,0.00);\$#,0.00"), "c2", FORMAT([m_1], "#,0"))
+ORDER BY [c0] ASC

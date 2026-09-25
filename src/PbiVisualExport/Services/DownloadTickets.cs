@@ -50,10 +50,10 @@ internal sealed class DownloadTicket
     public bool TryRedeem() =>
         Interlocked.CompareExchange(ref _state, (int)DownloadState.Streaming, (int)DownloadState.Issued) == (int)DownloadState.Issued;
 
-    public void Finish(DownloadState state, string? error = null)
+    public void Finish(DownloadState state, string? error = null, DateTimeOffset? at = null)
     {
         Error = error;
-        FinishedAt = DateTimeOffset.UtcNow;
+        FinishedAt = at ?? DateTimeOffset.UtcNow;
         Volatile.Write(ref _state, (int)state);
     }
 }
@@ -100,8 +100,9 @@ internal sealed class DownloadTicketStore
     public DownloadTicket? Find(string id)
     {
         if (!_tickets.TryGetValue(id, out var t)) return null;
-        if (t.State == DownloadState.Issued && _time.GetUtcNow() > t.ExpiresAt && t.TryRedeem())
-            t.Finish(DownloadState.Expired, "The download link expired before it was used.");
+        var now = _time.GetUtcNow();
+        if (t.State == DownloadState.Issued && now > t.ExpiresAt && t.TryRedeem())
+            t.Finish(DownloadState.Expired, "The download link expired before it was used.", now);
         return t;
     }
 

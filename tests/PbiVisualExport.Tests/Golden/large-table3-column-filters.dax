@@ -1,0 +1,12 @@
+// columns: c0=Order Year | c1=Region | c2=Category | c3=Order Count (measure) | c4=Total Sales (measure)
+// sort: Order Year ASC, Region ASC, Category ASC (implicit default)
+DEFINE
+  VAR _f0 = TREATAS({"East", "West"}, 'Orders'[Region])
+  VAR _f1 = FILTER(ALL('Orders'[Category]), NOT('Orders'[Category] IN {"Toys"}))
+  VAR _f2 = FILTER(ALL('Orders'[Order Year]), 'Orders'[Order Year] >= 2022 && 'Orders'[Order Year] < 2025)
+  VAR _f3 = FILTER(ALL('Orders'[Order Date]), 'Orders'[Order Date] < DATE(2022, 3, 1) || ISBLANK('Orders'[Order Date]))
+  VAR _f4 = FILTER(ALL('Orders'[Product Name]), SEARCH("Widget ""Pro""", 'Orders'[Product Name], 1, 0) > 0)
+  VAR _summ = SUMMARIZECOLUMNS('Orders'[Order Year], 'Orders'[Region], 'Orders'[Category], _f0, _f1, _f2, _f3, _f4, "m_0", [Order Count], "m_1", [Total Sales])
+EVALUATE
+SELECTCOLUMNS(_summ, "c0", FORMAT('Orders'[Order Year], "0"), "c1", 'Orders'[Region], "c2", 'Orders'[Category], "c3", FORMAT([m_0], "#,0"), "c4", FORMAT([m_1], "\$#,0.00;(\$#,0.00);\$#,0.00"), "s0", 'Orders'[Order Year])
+ORDER BY [s0] ASC, [c1] ASC, [c2] ASC
