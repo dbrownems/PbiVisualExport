@@ -146,8 +146,8 @@ which the client reads from the embedded report.
 - **Metadata cache**: definitions are cached in memory and on disk (default
   `%TEMP%/pbivisualexport-metadata-cache`), and the disk cache survives restarts.
   After you republish a model or report with changed fields, either delete the folder
-  or rely on `RefreshOnMissSeconds`: an unknown field re-downloads definitions older
-  than that.
+  or rely on `RefreshOnMissSeconds`: an unknown field or filter column re-downloads
+  definitions older than that.
 - **Linux**: the build and tests pass on Linux. XMLA streaming on Linux hasn't been
   verified against a live workspace yet.
 
@@ -168,7 +168,11 @@ privileged than the signed-in user. These layers decide what a caller can get:
 Details:
 
 - **Filters aren't restricted.** The embedding API can apply any filter to the live
-  visual anyway, and filters only remove rows.
+  visual anyway, and filters only remove rows. A filter on a column bound to a
+  dynamic M query parameter also sets the parameter, which reaches the source query.
+  The value is passed as a DAX literal, and by default it must be one of the bound
+  column's values (`Export:ValidateParameterValues`). Power BI itself doesn't check
+  this, so the M query must still treat parameter values as untrusted input.
 - **Download tickets** are unguessable, single-use, expire after 60 s, and are bound to
   the user who called `prepare`. If the download request is authenticated, it must be
   the same user. The download is anonymous so that a plain iframe navigation can save
@@ -253,6 +257,7 @@ Section `PbiVisualExport` (environment variables use `__`, for example
 | `Export:FieldValidation` | `Strict` | `Strict`: fields must be in the visual's saved PBIR definition, and PBIR-Legacy reports are refused. `PbirOnly`: PBIR-Legacy reports are exported unchecked. `Off`: trust the request. |
 | `Export:MaxRows` | `0` | A cap on rows (`TOPN`), where 0 means unlimited. |
 | `Export:CommandTimeoutSeconds` | `0` | The XMLA command timeout, where 0 means none. |
+| `Export:ValidateParameterValues` | `true` | Rejects (400) a filter that would set a dynamic M query parameter to a value missing from its bound column. Power BI passes such values to the source unchecked; `false` does the same. |
 | `Export:MaxConcurrentExportsPerUser` | `2` | Above this, requests get 429. 0 means unlimited. |
 | `Export:MaxConcurrentExports` | `0` | A process-wide limit (429 above it). 0 means unlimited. |
 | `Export:EnableBenchmark` | `false` | Enables `POST bench`. |
@@ -262,7 +267,7 @@ Section `PbiVisualExport` (environment variables use `__`, for example
 | `MetadataCache:TtlMinutes` | `60` | Freshness of cached definitions. ≤ 0 means they never expire on their own. |
 | `MetadataCache:PersistToDisk` | `true` | Keeps definitions across restarts. |
 | `MetadataCache:DiskCacheDirectory` | `%TEMP%/pbivisualexport-metadata-cache` | |
-| `MetadataCache:RefreshOnMissSeconds` | `60` | An unknown field re-downloads definitions older than this once. ≤ 0 disables it. |
+| `MetadataCache:RefreshOnMissSeconds` | `60` | An unknown field or filter column re-downloads definitions older than this once. ≤ 0 disables it. |
 
 ## Endpoints and request contract
 
@@ -271,7 +276,7 @@ All paths are relative to the prefix passed to `MapPbiVisualExport` (default
 
 | Endpoint | Auth | |
 |---|---|---|
-| `POST prepare` | group policy | Validates and plans the export, then returns `{ ticket, ticketExpiresInSeconds, fileName, columns, sort, warnings, … }`. |
+| `POST prepare` | group policy | Validates and plans the export, then returns `{ ticket, ticketExpiresInSeconds, fileName, columns, sort, parameters, warnings, … }`. |
 | `GET download/{ticket}` | anonymous (ticket) | Streams the CSV as an attachment. |
 | `GET download/{ticket}/status` | anonymous (ticket) | `{ state, rows, error, fileName }`. |
 | `POST csv` | group policy | Streams the CSV in the response (for `fetch` and programmatic callers). |
@@ -330,6 +335,11 @@ silently truncated file.
   - Top N
   - measure value filters, evaluated at the visual's grain, as Power BI does
   - slicer selections, including "select all" with exclusions
+  - filters and slicers on a column bound to a **dynamic M query parameter**: as in
+    Power BI's own query, the selection sets the parameter (`MPARAMETER`, so a
+    DirectQuery source query or an M filter sees it) and filters the column. Values
+    that aren't in the bound column are rejected (400) unless
+    `Export:ValidateParameterValues` is off.
   - field parameters (the visual's selected columns are exported)
 - **Formatting**:
   - Formatted (default): the model's format strings, applied by the engine's
@@ -348,7 +358,7 @@ silently truncated file.
 | Hierarchy slicers and hierarchy-level filter targets (`filterType` 9), tuple filters (6), relative date/time filters, Top N by a hierarchy level | Skipped with a warning, so the export can include rows the visual excludes. |
 | Cross-filtering or highlighting from a selection in another visual | Not captured. The client reads filters and slicer state only. |
 | Hierarchy-level sort keys | Skipped by the client. |
-| Slicers bound to dynamic M query parameters (DirectQuery) | Sent as an ordinary column filter, which should reach the parameter through the binding, but this is untested: the test model has a parameter without a bound slicer. |
+| Filters on a column bound to a dynamic M query parameter | `NotIn` and comparison filters, and several values for a single-value parameter, are rejected (400); Power BI can't export these selections either. "Select all" on a multi-select parameter slicer is untested: set through the embedding API, the client can't read the slicer, and native export fails too. |
 | Median, StdDev and Variance implicit aggregations | Computed as `SUM`. |
 | No explicit sort | Power BI's implicit order is approximated: group-by columns ascending. |
 | Field-parameter visuals | Headers use the column name, not the parameter's label. |

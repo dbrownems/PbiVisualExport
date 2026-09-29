@@ -315,8 +315,10 @@ _sample/                                   upstream MS "Embed for your customers
   - `prepare` also runs `CsvExportService.PlanAsync` (cached metadata, field
     validation, DAX build) and the XMLA token check, checks the per-user concurrency
     limit, and issues a ticket: `{ fileName, columns, sort, reportMeasures,
-    measureFilters, warnings, ticket, ticketExpiresInSeconds, workspaceName,
-    datasetId, datasetName, reportName }`.
+    measureFilters, parameters, warnings, ticket, ticketExpiresInSeconds, workspaceName,
+    datasetId, datasetName, reportName }`. (`parameters` are the dynamic M parameter
+    values it sets, e.g. `RegionParam = "West"`; their values are validated when the
+    query runs, so a bad value fails the download, reported through its status.)
   - `download/{ticket}` is anonymous (a navigation can't send auth headers); the
     ticket is single-use, expires after `Downloads:TicketLifetimeSeconds`, and is
     bound to the user key of `prepare` — an authenticated download by someone else
@@ -352,7 +354,9 @@ _sample/                                   upstream MS "Embed for your customers
   read arbitrary columns. Sort keys outside the visual (and its saved sort) are
   dropped with a warning. A miss triggers one refresh-on-miss. `PbirOnly` exports
   PBIR-Legacy reports unchecked; `Off` trusts the request. Filters are never
-  restricted (they only narrow rows).
+  restricted (they only narrow rows), but a filter on a column bound to a dynamic M
+  parameter also picks the data the source query reads: see **Dynamic M query
+  parameters** below.
 - **`CsvExportService`** plans the query (`PlanAsync`, see **Report-level
   measures** below), opens an ADOMD.NET connection via `XmlaConnectionFactory`, runs the **single**
   query with `ExecuteReader`, writes a UTF-8 (BOM) header row, and streams each row,
@@ -420,6 +424,25 @@ _sample/                                   upstream MS "Embed for your customers
       raw column's values; it now filters the aggregate.
     - **Hierarchy** targets (hierarchy slicers `filterType 9`, tuple filters
       `filterType 6`) are skipped with a warning (a known gap).
+    - **Dynamic M query parameters.** A named expression with `ParameterValuesColumn`
+      (TMDL `parameterValuesColumn`) is bound to that column; a filter or slicer on
+      the column also sets the parameter, as Power BI's own query does (traced):
+      `DEFINE MPARAMETER 'Name' = value` lines come **first**, and the column filter
+      (`_f{i}`) stays. The value is a scalar for a single-value binding and a list
+      `{…}` (even for one value) when the bound column's `ParameterMetadata` extended
+      property has `supportsMultipleValues: true`. Only selections of values bind:
+      basic `In`, or advanced `Is` conditions (`Or` = union, `And` = intersection);
+      several filters on the column intersect. `All` or an empty selection leaves the
+      parameter at its default (no `MPARAMETER`). `NotIn`, comparisons, an empty
+      intersection, or several values on a single-value parameter → **400** (native
+      export fails on those too). `MPARAMETER` takes any DAX expression (verified), so
+      date literals (`DATE(...)`) work. With `Export:ValidateParameterValues` (default
+      true) `CsvExportService` checks each parameter's values against the bound column
+      (`EVALUATE EXCEPT({values}, VALUES(col))`, same connection) and rejects unknown
+      ones (400). Power BI does no such check: it passes any value to the source
+      (traced: `"Nowhere"` reached the SQL `WHERE`). Before this, the parameter was
+      never set: every export read the parameter's default (e.g. East) whatever the
+      slicer said.
 - **`XmlaConnectionFactory`** — XMLA addresses by **name only**:
   `Data Source = {PbiVisualExport:XmlaEndpoint}/{workspace name}`, `Initial Catalog =
   {semantic model name}` (GUIDs are rejected). Workspace needs Premium/Fabric
@@ -453,16 +476,20 @@ _sample/                                   upstream MS "Embed for your customers
   treated as read-only. Options: `Enabled`, `TtlMinutes` (60), `PersistToDisk`
   (true), `DiskCacheDirectory` (blank = temp), `RefreshOnMissSeconds` (60).
   - **Invalidation** is deliberately simple — models and reports change at planned
-    deployments: entries expire after the TTL, and a field that can't be resolved
+    deployments: entries expire after the TTL, and a field (or the column of an
+    active filter) that can't be resolved
     triggers one re-download of any definition older than `RefreshOnMissSeconds`
     (so a just-deployed column/measure is picked up; repeated bad requests don't
     hammer Fabric). **The disk cache survives an app recycle** — after a deployment
     delete the cache folder (or run with `PersistToDisk=false`) to force a reload.
+    (Filter columns count because a stale model can't translate such a filter, or
+    see that it sets a newly bound M parameter.)
 - **Report-level measures** (`CsvExportService.PlanAsync`). A report can define its
   own measures in `definition/reportExtensions.json` (enhanced PBIR); the JS client
   sends them like model measures (`{table, measure}` fields / sort entries). Flow:
   1. `DaxQueryBuilder.FindUnresolvedFields(request, model)` lists fields, sort
-     measures and **measures named by active value/Top N filters** that the (cached)
+     measures, **measures named by active value/Top N filters** and **columns of
+     active column filters** that the (cached)
      model lacks. None → build from the model alone; **the
      report definition is never downloaded** for such visuals.
   2. If any unresolved field is a **measure**, load the (cached) report definition
@@ -567,7 +594,7 @@ both together, and bump the version on a breaking wire change.
   | Folder | Exercises |
   |---|---|
   | `models/FieldParamTest` + `reports/FieldParamReport` | **Field parameter** (calc table with `ParameterMetadata`); self-contained M-literal tables (refresh with no credentials). |
-  | `models/DqParamTest` + `reports/DqParamReport` | **Dynamic M query parameter** over a **DirectQuery** Warehouse; native query references `RegionParam`. |
+  | `models/DqParamTest` + `reports/DqParamReport` | **Dynamic M query parameters** over a **DirectQuery** Warehouse: `RegionParam` (single value) and `CategoryParam` (multi-select) are bound to the Import picker tables `RegionPicker`/`CategoryPicker`, which `slicer1`/`slicer2` filter; the `Sales` native query folds both into its `WHERE`. Golden case `dq-table1-mparameter-slicers`. |
   | `reports/StoreSales` | **Variety of visuals** (table, matrix, column/bar/line/donut charts, card, slicer) + **report-level measures** in `reportExtensions.json` (Page3 `rmTable`: two report measures, one built on the other, sorted by one). Default embedded report. |
   | `models/LargeExportTest` + `reports/LargeExportReport` | **Scale + data-type/format fidelity**: a deterministic **2M-row × 31-column** DAX calculated table (every data type, many format strings, CSV-hostile strings, BLANKs, > 2^53 int64, one hidden column). Both generated by **`generate-large-export.py`** — edit the spec there, never the output. |
   | `samples/` | `StoreSales.pbix`, `SalesAndReturns` + decoded `salesreturns_tmdl/` (reference PBIX/TMDL syntax). |
@@ -592,6 +619,12 @@ both together, and bump the version on a breaking wire change.
     needs no `ref`. A `queryGroup:` on an expression requires the group to be
     declared, or deploy fails with `Workload_FailedToParseFile` — omit it if unused.
   - Dynamic M parameter: `expression RegionParam = "East" meta [IsParameterQuery=true, Type="Text", IsParameterQueryRequired=true]` in `definition/expressions.tmdl`.
+    Bind it to a column with `parameterValuesColumn: RegionPicker.RegionChoice` on the
+    expression; the bound column carries `extendedProperty ParameterMetadata =
+    {"version":2,"kind":1}` (add `"supportsMultipleValues": true, "selectAllValue":
+    "__SelectAll__"` for multi-select, and make the M accept a list). Use a
+    **disconnected** picker table: filtering it has no effect except through the
+    parameter.
   - Field parameter: 3-column calc table, `source = { ("Label", NAMEOF('T'[Col]), 0), ... }`,
     in the Desktop shape: the label column (`[Value1]`) has
     `relatedColumnDetails` → `groupByColumn: 'Fields Fields'`; only the hidden value
@@ -676,8 +709,13 @@ detailed here.
   remaining gap is that CSV headers use the column name (`Product`) where native
   export uses the parameter label (`Product Name`); the SDK doesn't expose that
   label (`ExportField.Header` exists to carry it).
-- **DirectQuery slicer→parameter binding** is not reproduced report-side; the DQ
-  sample ships a detectable dynamic M parameter, not the bound-slicer UX.
+- **Dynamic M parameter bindings** are supported (see **Filters** above; verified
+  against native export on DqParamReport). Gaps: "Select all" on a multi-select
+  parameter slicer is untested. Set through the API (`NotIn []`), it makes the
+  client's slicer read fail (`slicerUnreadable`), and native export fails too. If a
+  real "Select all" arrived as no selection, the parameter would keep its default,
+  which is right only if the default is the `selectAllValue`. `NotIn`/comparison
+  filters on a bound column are refused (400), as native export refuses them.
 - Filter translation skips **hierarchy-level** filter targets (with a warning),
   including **hierarchy slicer** filters (`filterType 9`, `hierarchyData`): e.g.
   LargeExportReport `table3` exports 72 rows instead of 70 because its
