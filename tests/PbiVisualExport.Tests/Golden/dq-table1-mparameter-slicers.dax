@@ -1,0 +1,13 @@
+// columns: c0=Category | c1=Product | c2=SaleDate | c3=Total Quantity (measure) | c4=Total Amount (measure)
+// sort: Category ASC, Product ASC, SaleDate ASC (implicit default)
+// M parameter: RegionParam = "West"
+// M parameter: CategoryParam = {"Bikes", "Clothing"}
+DEFINE
+  MPARAMETER 'RegionParam' = "West"
+  MPARAMETER 'CategoryParam' = {"Bikes", "Clothing"}
+  VAR _f0 = TREATAS({"West"}, 'RegionPicker'[RegionChoice])
+  VAR _f1 = TREATAS({"Bikes", "Clothing"}, 'CategoryPicker'[CategoryChoice])
+  VAR _summ = SUMMARIZECOLUMNS('Sales'[Category], 'Sales'[Product], 'Sales'[SaleDate], _f0, _f1, "m_0", [Total Quantity], "m_1", [Total Amount])
+EVALUATE
+SELECTCOLUMNS(_summ, "c0", 'Sales'[Category], "c1", 'Sales'[Product], "c2", FORMAT('Sales'[SaleDate], "General Date"), "c3", FORMAT([m_0], "#,0"), "c4", FORMAT([m_1], "\$#,0.00;(\$#,0.00);\$#,0.00"), "s0", 'Sales'[SaleDate])
+ORDER BY [c0] ASC, [c1] ASC, [s0] ASC

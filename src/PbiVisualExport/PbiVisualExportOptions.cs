@@ -88,11 +88,23 @@ public sealed class ExportOptions
     ///  * PbirOnly: as Strict for PBIR reports; PBIR-Legacy reports are exported unchecked.
     ///  * Off: no check (the request's field list is trusted).
     /// Filters are not restricted: the embedding API can apply any filter to the live visual
-    /// anyway, and filters only narrow the rows. A miss re-downloads a cached definition older
+    /// anyway, and filters only narrow the rows, except filters on a column bound to a dynamic
+    /// M query parameter, which choose the data the source query reads (see
+    /// <see cref="ValidateParameterValues"/>). A miss re-downloads a cached definition older
     /// than <see cref="MetadataCacheOptions.RefreshOnMissSeconds"/> once (the report may have
     /// just been republished).
     /// </summary>
     public FieldValidationMode FieldValidation { get; set; } = FieldValidationMode.Strict;
+
+    /// <summary>
+    /// A filter on a column bound to a dynamic M query parameter sets the parameter
+    /// (<c>MPARAMETER</c>), which the model's M passes to the source (e.g. into a native SQL
+    /// query). When true (default), each value must exist in the bound column, checked with a
+    /// small DAX query before the export (400 otherwise), so a caller can't pass arbitrary text
+    /// into the source query. Power BI itself passes unknown values through (usually giving an
+    /// empty result); set false to match that.
+    /// </summary>
+    public bool ValidateParameterValues { get; set; } = true;
 
     /// <summary>
     /// Enables <c>POST {prefix}/bench</c>, which runs an export's query and reads every

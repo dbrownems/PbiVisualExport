@@ -104,6 +104,7 @@ internal sealed class ExportHandler
                 sort = plan.SortDescription,
                 reportMeasures = plan.ReportMeasures,
                 measureFilters = plan.MeasureFilters,
+                parameters = plan.Parameters.Select(p => p.ToString()),
                 warnings = plan.Warnings,
                 ticket = ticket.Id,
                 ticketExpiresInSeconds = (int)_tickets.Lifetime.TotalSeconds,

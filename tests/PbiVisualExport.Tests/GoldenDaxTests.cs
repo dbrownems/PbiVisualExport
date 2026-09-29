@@ -78,12 +78,14 @@ public class GoldenDaxTests
         // A field parameter expanded by the client to the column it currently selects.
         new("fieldparam-fptable", "FieldParamTest", null, () => Fixtures.RequestFromVisual("FieldParamReport", "Page1", "fpTable")),
 
-        // DirectQuery model whose Sales source query is filtered by the RegionParam M parameter; the slicer
-        // on the Region dimension is a plain column filter (the engine folds it into the DirectQuery SQL).
-        new("dq-table1-param-slicer", "DqParamTest", null, () =>
+        // DirectQuery model whose Sales source query is filtered by dynamic M parameters bound to the
+        // picker columns: slicers on them set RegionParam (single-select, scalar) and CategoryParam
+        // (multi-select, a list) with MPARAMETER, and stay as column filters, as in Power BI's own query.
+        new("dq-table1-mparameter-slicers", "DqParamTest", null, () =>
         {
             var r = Fixtures.RequestFromVisual("DqParamReport", "Page1", "table1");
-            r.Filters.Add(Fixtures.Filter("""{"$schema":"http://powerbi.com/product/schema#basic","target":{"table":"Region","column":"RegionName"},"filterType":1,"operator":"In","values":["West"],"requireSingleSelection":true}"""));
+            r.Filters.Add(Fixtures.Filter("""{"$schema":"http://powerbi.com/product/schema#basic","target":{"table":"RegionPicker","column":"RegionChoice"},"filterType":1,"operator":"In","values":["West"],"requireSingleSelection":true}"""));
+            r.Filters.Add(Fixtures.Filter("""{"$schema":"http://powerbi.com/product/schema#basic","target":{"table":"CategoryPicker","column":"CategoryChoice"},"filterType":1,"operator":"In","values":["Bikes","Clothing"],"requireSingleSelection":false}"""));
             return r;
         }),
 
@@ -135,6 +137,7 @@ public class GoldenDaxTests
         sb.Append("// sort: ").Append(plan.SortDescription).Append('\n');
         if (plan.ReportMeasures.Count > 0) sb.Append("// report measures: ").Append(string.Join(", ", plan.ReportMeasures)).Append('\n');
         foreach (var f in plan.MeasureFilters) sb.Append("// measure filter: ").Append(f).Append('\n');
+        foreach (var p in plan.Parameters) sb.Append("// M parameter: ").Append(p).Append('\n');
         foreach (var w in plan.Warnings) sb.Append("// warning: ").Append(w).Append('\n');
         if (maxRows > 0) sb.Append("// maxRows: ").Append(maxRows).Append('\n');
         sb.Append(plan.BuildQuery(maxRows)).Append('\n');

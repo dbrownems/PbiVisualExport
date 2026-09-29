@@ -48,6 +48,29 @@ public class DaxQueryBuilderTests
         Assert.Empty(DaxQueryBuilder.FindUnresolvedFields(r, Model));
     }
 
+    [Fact]
+    public void FindUnresolvedFields_ListsColumnsOfActiveFilters()
+    {
+        // e.g. a slicer on a column added since the model was cached: refreshing may find it (and its parameter binding).
+        var r = Samples.Request(Samples.Column("Sales", "Region"));
+        r.Filters.Add(Fixtures.Filter(Basic("New Column", "In", """["x"]""")));
+        r.Filters.Add(Fixtures.Filter(Basic("new column", "In", """["y"]""")));
+        r.Filters.Add(Fixtures.Filter(Advanced("""{"table":"Sales","column":"New Advanced"}""", "And", """[{"operator":"Is","value":"x"}]""")));
+        r.Filters.Add(Fixtures.Filter("""{"$schema":"http://powerbi.com/product/schema#topN","target":{"table":"Sales","column":"New TopN"},"filterType":5,"operator":"Top","itemCount":2,"orderBy":{"table":"Sales","measure":"Total"}}"""));
+        // Inactive filters (nothing selected) and known columns don't count.
+        r.Filters.Add(Fixtures.Filter(Basic("Unset", "In", "[]")));
+        r.Filters.Add(Fixtures.Filter(Basic("All Selected", "All", """["x"]""")));
+        r.Filters.Add(Fixtures.Filter(Advanced("""{"table":"Sales","column":"No Conditions"}""", "And", "[]")));
+        r.Filters.Add(Fixtures.Filter(Basic("region", "In", """["West"]""")));
+
+        Assert.Equal(new[]
+        {
+            new UnresolvedField("'Sales'[New Column]", null, false),
+            new UnresolvedField("'Sales'[New Advanced]", null, false),
+            new UnresolvedField("'Sales'[New TopN]", null, false)
+        }, DaxQueryBuilder.FindUnresolvedFields(r, Model));
+    }
+
     // ---- Shape of the query ----
 
     [Fact]
@@ -249,6 +272,79 @@ public class DaxQueryBuilderTests
         r.Filters.Add(Fixtures.Filter(Advanced("""{"table":"Sales","measure":"Nope"}""", "And", """[{"operator":"GreaterThan","value":1}]""")));
         var ex = Assert.Throws<ExportRequestException>(() => Build(r));
         Assert.Contains("Filter measure [Nope] was not found", ex.Message);
+    }
+
+    // ---- Dynamic M query parameters (DqParamTest: RegionParam single-select, CategoryParam multi-select) ----
+
+    private static readonly Lazy<Microsoft.AnalysisServices.Tabular.Model> DqModel = new(() => Fixtures.Model("DqParamTest"));
+
+    private static DaxPlan BuildDq(params string[] filters)
+    {
+        var r = Samples.Request(Samples.Column("Sales", "Product"), Samples.Measure("Sales", "Total Amount"));
+        foreach (var f in filters) r.Filters.Add(Fixtures.Filter(f));
+        return new DaxQueryBuilder().Build(r, DqModel.Value);
+    }
+
+    private static string Region(string op, string values) =>
+        $$"""{"$schema":"http://powerbi.com/product/schema#basic","target":{"table":"RegionPicker","column":"RegionChoice"},"filterType":1,"operator":"{{op}}","values":{{values}},"requireSingleSelection":true}""";
+
+    private static string Category(string op, string values) =>
+        $$"""{"$schema":"http://powerbi.com/product/schema#basic","target":{"table":"CategoryPicker","column":"CategoryChoice"},"filterType":1,"operator":"{{op}}","values":{{values}}}""";
+
+    private static string CategoryConditions(string logical, string conditions) =>
+        Advanced("""{"table":"CategoryPicker","column":"CategoryChoice"}""", logical, conditions);
+
+    [Fact]
+    public void BoundColumnFilter_SetsTheMParameter_AndKeepsTheColumnFilter()
+    {
+        var plan = BuildDq(Region("In", """["West"]"""), Category("In", """["Bikes"]"""));
+        var q = plan.BuildQuery();
+
+        // As Power BI: parameters first; single-select scalar, multi-select always a list.
+        Assert.StartsWith("DEFINE\n  MPARAMETER 'RegionParam' = \"West\"\n  MPARAMETER 'CategoryParam' = {\"Bikes\"}\n", q);
+        Assert.Contains("VAR _f0 = TREATAS({\"West\"}, 'RegionPicker'[RegionChoice])", q);
+        Assert.Contains("VAR _f1 = TREATAS({\"Bikes\"}, 'CategoryPicker'[CategoryChoice])", q);
+        Assert.Equal(new[] { "RegionParam = \"West\"", "CategoryParam = {\"Bikes\"}" }, plan.Parameters.Select(p => p.ToString()));
+        Assert.Equal("'RegionPicker'[RegionChoice]", plan.Parameters[0].ColumnRef);
+    }
+
+    [Fact]
+    public void MultiSelectParameter_TakesIsConditionsJoinedByOr_AndIntersectsFilters()
+    {
+        var or = BuildDq(CategoryConditions("Or", """[{"operator":"Is","value":"Bikes"},{"operator":"Is","value":"Clothing"}]"""));
+        Assert.Equal("CategoryParam = {\"Bikes\", \"Clothing\"}", Assert.Single(or.Parameters).ToString());
+
+        var both = BuildDq(Category("In", """["Bikes", "Clothing"]"""), Category("In", """["Clothing", "Accessories"]"""));
+        Assert.Equal("CategoryParam = {\"Clothing\"}", Assert.Single(both.Parameters).ToString());
+
+        var ex = Assert.Throws<ExportRequestException>(() => BuildDq(Category("In", """["Bikes"]"""), Category("In", """["Clothing"]""")));
+        Assert.Contains("no value in common", ex.Message);
+    }
+
+    [Fact]
+    public void NoSelectionOnABoundColumn_KeepsTheParameterDefault()
+    {
+        var plan = BuildDq(Region("All", "[]"), Category("In", "[]"), Category("NotIn", "[]"), CategoryConditions("And", "[]"));
+        Assert.Empty(plan.Parameters);
+        Assert.DoesNotContain("MPARAMETER", plan.BuildQuery());
+    }
+
+    [Theory]
+    [InlineData("region-two-values", "takes a single value")]
+    [InlineData("category-notin", "excludes values")]
+    [InlineData("category-greaterthan", "uses condition 'GreaterThan'")]
+    [InlineData("category-is-and", "no value in common")]
+    public void SelectionsPowerBICantBindToAParameter_FailTheExport(string shape, string message)
+    {
+        var filter = shape switch
+        {
+            "region-two-values" => Region("In", """["West", "North"]"""),
+            "category-notin" => Category("NotIn", """["Bikes"]"""),
+            "category-greaterthan" => CategoryConditions("And", """[{"operator":"GreaterThan","value":"B"}]"""),
+            _ => CategoryConditions("And", """[{"operator":"Is","value":"Bikes"},{"operator":"Is","value":"Clothing"}]""")
+        };
+        var ex = Assert.Throws<ExportRequestException>(() => BuildDq(filter));
+        Assert.Contains(message, ex.Message);
     }
 
     [Fact]

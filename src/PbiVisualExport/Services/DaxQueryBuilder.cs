@@ -20,6 +20,18 @@ internal sealed record QueryMeasure(string Name, string Reference, string Expres
 internal sealed record TopNFilter(string ColumnRef, long Count, bool Bottom, string OrderExpression);
 
 /// <summary>
+/// A dynamic M query parameter set from the filters on its bound column
+/// (<c>DEFINE MPARAMETER 'Name' = value</c>), as Power BI does: a scalar, or a list
+/// when the binding allows multiple values. <see cref="Literals"/> are DAX literals.
+/// </summary>
+internal sealed record MParameterValue(string Name, string ColumnRef, IReadOnlyList<string> Literals, bool MultiSelect)
+{
+    public string Value => MultiSelect ? "{" + string.Join(", ", Literals) + "}" : Literals[0];
+
+    public override string ToString() => $"{Name} = {Value}";
+}
+
+/// <summary>
 /// Translated filters, applied in Power BI's order: column filters; then Top N filters, each
 /// ranked under the column filters only; then one value filter holding every measure
 /// condition, evaluated at the visual's grain under all of the above.
@@ -39,6 +51,9 @@ internal sealed class FilterSet
 
     /// <summary>Measures referenced by value/Top N filters, for the plan summary.</summary>
     public List<string> Descriptions { get; } = new();
+
+    /// <summary>Dynamic M parameters bound by filters on their bound columns (the column filters are kept too).</summary>
+    public List<MParameterValue> Parameters { get; } = new();
 }
 
 /// <summary>
@@ -83,6 +98,7 @@ internal sealed class DaxPlan
         ApplyFormatStrings = applyFormatStrings;
         ReportMeasures = queryMeasures.Select(q => q.Name).ToList();
         MeasureFilters = filters.Descriptions;
+        Parameters = filters.Parameters;
     }
 
     /// <summary>Output (CSV) columns in visual order.</summary>
@@ -93,6 +109,9 @@ internal sealed class DaxPlan
 
     /// <summary>Applied measure filters (value and Top N), e.g. "[Total Sales] > 1000".</summary>
     public IReadOnlyList<string> MeasureFilters { get; }
+
+    /// <summary>Dynamic M parameters set from filters on their bound columns; the rest keep their defaults.</summary>
+    public IReadOnlyList<MParameterValue> Parameters { get; }
 
     /// <summary>false = project raw typed values instead of FORMAT()-ed text.</summary>
     public bool ApplyFormatStrings { get; }
@@ -110,6 +129,9 @@ internal sealed class DaxPlan
         var select = "SELECTCOLUMNS(_summ, " + string.Join(", ", proj) + ")";
         var sb = new StringBuilder();
         sb.Append("DEFINE\n");
+        // Dynamic M parameters first, as Power BI emits them.
+        foreach (var p in _filters.Parameters)
+            sb.Append("  MPARAMETER ").Append(DaxQueryBuilder.QuoteName(p.Name)).Append(" = ").Append(p.Value).Append('\n');
         // Report measures, dependencies first. The newline after each expression ends any
         // trailing // comment. Continuation lines aren't re-indented (could alter string literals).
         foreach (var qm in _queryMeasures)
@@ -219,8 +241,8 @@ internal sealed class DaxPlan
 internal sealed class DaxQueryBuilder
 {
     /// <summary>
-    /// Fields and sort measures the model doesn't define. Measures may be report-level
-    /// measures; <see cref="Build"/> needs the report definition to resolve them.
+    /// Fields, sort measures and filter targets the model doesn't define. Measures may be
+    /// report-level measures; <see cref="Build"/> needs the report definition to resolve them.
     /// </summary>
     public static List<UnresolvedField> FindUnresolvedFields(VisualExportRequest request, TOM.Model model)
     {
@@ -243,6 +265,14 @@ internal sealed class DaxQueryBuilder
         foreach (var name in request.Filters.SelectMany(FilterMeasureNames).Distinct(StringComparer.OrdinalIgnoreCase))
             if (FindMeasure(model, name) is null && !list.Any(u => Eq(u.MeasureName, name) && !u.SortOnly))
                 list.Add(new UnresolvedField($"[{name}]", name, false));
+        // Columns of active column filters: a (stale) model without the column can't translate the
+        // filter, or know that it sets a dynamic M parameter.
+        foreach (var (table, column) in request.Filters.Select(ActiveFilterColumn).OfType<(string, string)>())
+        {
+            var label = ColRef(table, column);
+            if (FindColumn(model, table, column) is null && !list.Any(u => Eq(u.Label, label)))
+                list.Add(new UnresolvedField(label, null, false));
+        }
         return list;
     }
 
@@ -503,13 +533,16 @@ internal sealed class DaxQueryBuilder
     /// Translates the report, page and visual filters and slicer states sent by the client.
     /// Column targets become filter tables. Measure and implicit-measure targets (visual-level
     /// value filters such as "Total Sales is greater than 1000") and Top N filters are
-    /// evaluated as Power BI does (see <see cref="FilterSet"/>). Filters that fail to
+    /// evaluated as Power BI does (see <see cref="FilterSet"/>). A filter on a column bound to a
+    /// dynamic M query parameter also sets the parameter (<c>MPARAMETER</c>). Filters that fail to
     /// translate are skipped with a warning; a filter measure that doesn't exist fails the export.
     /// </summary>
     private static FilterSet BuildFilters(IEnumerable<JsonElement> filters, TOM.Model model, List<MeasureField> measures,
         Func<string, bool> isReportMeasure, List<string> warnings)
     {
         var set = new FilterSet();
+        var bindings = ParameterBindings(model);
+        var selections = new List<ParameterSelection>();
         foreach (var filter in filters)
         {
             if (filter.ValueKind != JsonValueKind.Object || !filter.TryGetProperty("target", out var target)) continue;
@@ -526,7 +559,15 @@ internal sealed class DaxQueryBuilder
             {
                 if (IsTopN(filter)) AddTopN(filter, target, model, isReportMeasure, set, warnings);
                 else if (IsMeasureTarget(target)) AddValueFilter(filter, target, model, measures, isReportMeasure, set, warnings);
-                else if (TranslateColumnFilter(filter, target, model) is { } arg) set.Columns.Add(arg);
+                else
+                {
+                    // A filter on a dynamic M parameter's bound column also sets the parameter;
+                    // Power BI keeps the column filter as well.
+                    if (bindings.Count > 0 && Str(target, "table") is { } bt && Str(target, "column") is { } bc &&
+                        FindColumn(model, bt, bc) is { } boundColumn && bindings.TryGetValue(boundColumn, out var bound))
+                        foreach (var b in bound) SelectParameterValues(filter, b, selections);
+                    if (TranslateColumnFilter(filter, target, model) is { } arg) set.Columns.Add(arg);
+                }
             }
             catch (ExportRequestException) { throw; }
             catch (Exception ex)
@@ -534,7 +575,107 @@ internal sealed class DaxQueryBuilder
                 warnings.Add($"Filter on {TargetLabel(target)} could not be translated ({ex.Message}); ignored.");
             }
         }
+
+        foreach (var s in selections)
+        {
+            var b = s.Binding;
+            if (s.Literals.Count == 0)
+                throw new ExportRequestException(
+                    $"The filters on {b.ColumnRef} have no value in common, so dynamic M query parameter {b.Name} (bound to it) can't be set.");
+            if (!b.MultiSelect && s.Literals.Count > 1)
+                throw new ExportRequestException(
+                    $"{b.ColumnRef} is bound to dynamic M query parameter {b.Name}, which takes a single value, but the filters " +
+                    $"select {s.Literals.Count} ({string.Join(", ", s.Literals)}). Power BI can't export this selection either: " +
+                    "select one value, or allow multi-select on the parameter binding.");
+            set.Parameters.Add(new MParameterValue(b.Name, b.ColumnRef, s.Literals, b.MultiSelect));
+        }
         return set;
+    }
+
+    // ---- Dynamic M query parameters ----
+
+    /// <summary>An M parameter bound to a model column (the expression's <c>ParameterValuesColumn</c>).</summary>
+    private sealed record ParameterBinding(string Name, string ColumnRef, TOM.DataType DataType, bool MultiSelect);
+
+    /// <summary>The values selected so far for a parameter (DAX literals), intersected across its filters.</summary>
+    private sealed record ParameterSelection(ParameterBinding Binding, List<string> Literals);
+
+    private static Dictionary<TOM.Column, List<ParameterBinding>> ParameterBindings(TOM.Model model)
+    {
+        var map = new Dictionary<TOM.Column, List<ParameterBinding>>();
+        foreach (TOM.NamedExpression e in model.Expressions)
+        {
+            if (e.ParameterValuesColumn is not { } col) continue;
+            if (!map.TryGetValue(col, out var list)) map[col] = list = new();
+            list.Add(new ParameterBinding(e.Name, ColRef(col.Table.Name, col.Name), col.DataType, SupportsMultipleValues(col)));
+        }
+        return map;
+    }
+
+    /// <summary>
+    /// A multi-select binding: the bound column's <c>ParameterMetadata</c> extended property (as
+    /// Power BI Desktop writes it) has <c>"supportsMultipleValues": true</c>. The parameter then
+    /// receives a list, even for one value.
+    /// </summary>
+    private static bool SupportsMultipleValues(TOM.Column column)
+    {
+        if (column.ExtendedProperties.Find("ParameterMetadata") is not TOM.JsonExtendedProperty p || string.IsNullOrWhiteSpace(p.Value))
+            return false;
+        try
+        {
+            using var doc = JsonDocument.Parse(p.Value);
+            return doc.RootElement.ValueKind == JsonValueKind.Object &&
+                   doc.RootElement.TryGetProperty("supportsMultipleValues", out var v) && v.ValueKind == JsonValueKind.True;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Records the values a filter on a bound column selects, as Power BI binds them: In (or
+    /// Is conditions) sets the parameter to those values; All or an empty selection leaves its
+    /// default. Anything else (NotIn, comparisons, ...) can't become parameter values; Power BI
+    /// fails to export it too, so it's a 400 rather than an export with the default value.
+    /// </summary>
+    private static void SelectParameterValues(JsonElement filter, ParameterBinding b, List<ParameterSelection> selections)
+    {
+        ExportRequestException Unsupported(string what) => new(
+            $"The filter on {b.ColumnRef} {what}, but the column is bound to dynamic M query parameter {b.Name}, which needs " +
+            "the selected values. Power BI can't export this selection either: select values with a slicer or an 'In' filter.");
+
+        List<string>? literals = null;
+        if (filter.TryGetProperty("values", out var values) && values.ValueKind == JsonValueKind.Array && filter.TryGetProperty("operator", out _))
+        {
+            var op = Str(filter, "operator") ?? "In";
+            if (Eq(op, "All") || values.GetArrayLength() == 0) return;
+            if (!Eq(op, "In")) throw Unsupported(Eq(op, "NotIn") ? "excludes values" : $"uses operator '{op}'");
+            literals = values.EnumerateArray().Select(v => DaxLiteral(b.DataType, v)).ToList();
+        }
+        else if (filter.TryGetProperty("conditions", out var conds) && conds.ValueKind == JsonValueKind.Array)
+        {
+            var and = !Eq(Str(filter, "logicalOperator"), "Or");
+            foreach (var c in conds.EnumerateArray())
+            {
+                var op = Str(c, "operator");
+                if (Eq(op, "None")) continue;
+                if (!Eq(op, "Is") || !c.TryGetProperty("value", out var v)) throw Unsupported($"uses condition '{op}'");
+                var lit = DaxLiteral(b.DataType, v);
+                if (literals is null) literals = new List<string> { lit };
+                else if (and) literals = literals.Where(l => Eq(l, lit)).ToList();
+                else literals.Add(lit);
+            }
+            if (literals is null) return;
+        }
+        else if (Str(filter, "operator") is { } other && !Eq(other, "All"))
+            throw Unsupported($"uses operator '{other}'");
+        else return;
+
+        literals = literals.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var i = selections.FindIndex(s => s.Binding == b);
+        if (i < 0) selections.Add(new ParameterSelection(b, literals));
+        else selections[i] = selections[i] with { Literals = selections[i].Literals.Where(l => literals.Contains(l, StringComparer.OrdinalIgnoreCase)).ToList() };
     }
 
     private static bool IsTopN(JsonElement filter)
@@ -550,6 +691,24 @@ internal sealed class DaxQueryBuilder
 
     private static long TopNCount(JsonElement filter)
         => filter.TryGetProperty("itemCount", out var c) && c.ValueKind == JsonValueKind.Number && c.TryGetInt64(out var n) ? n : 0;
+
+    /// <summary>
+    /// The column an active column filter (basic values, advanced conditions or Top N) targets;
+    /// null for measure targets, hierarchy targets and filters that select everything.
+    /// </summary>
+    private static (string Table, string Column)? ActiveFilterColumn(JsonElement filter)
+    {
+        if (filter.ValueKind != JsonValueKind.Object || !filter.TryGetProperty("target", out var target) ||
+            target.ValueKind != JsonValueKind.Object || IsMeasureTarget(target) ||
+            Str(target, "table") is not { Length: > 0 } table || Str(target, "column") is not { Length: > 0 } column)
+            return null;
+        var active = IsTopN(filter)
+            ? TopNCount(filter) > 0
+            : HasConditions(filter) ||
+              (filter.TryGetProperty("values", out var v) && v.ValueKind == JsonValueKind.Array && v.GetArrayLength() > 0 &&
+               !Eq(Str(filter, "operator"), "All"));
+        return active ? (table, column) : null;
+    }
 
     /// <summary>Measure names referenced by active value and Top N filters.</summary>
     private static IEnumerable<string> FilterMeasureNames(JsonElement filter)
@@ -788,6 +947,8 @@ internal sealed class DaxQueryBuilder
     }
 
     internal static string QuoteString(string s) => "\"" + s.Replace("\"", "\"\"") + "\"";
+    /// <summary>A quoted object name, e.g. a table or M parameter: <c>'Name'</c>.</summary>
+    internal static string QuoteName(string name) => QuoteTable(name);
     private static string QuoteTable(string t) => "'" + t.Replace("'", "''") + "'";
     private static string EscBracket(string s) => s.Replace("]", "]]");
     private static string ColRef(string table, string column) => $"{QuoteTable(table)}[{EscBracket(column)}]";

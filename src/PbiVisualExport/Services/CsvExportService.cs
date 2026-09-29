@@ -234,6 +234,8 @@ internal sealed class CsvExportService
         _log.LogInformation("Export row order: {Sort}", plan.SortDescription);
         if (plan.MeasureFilters.Count > 0)
             _log.LogInformation("Measure filters: {Filters}", string.Join("; ", plan.MeasureFilters));
+        if (plan.Parameters.Count > 0)
+            _log.LogInformation("Dynamic M parameters: {Parameters}", string.Join("; ", plan.Parameters));
         foreach (var w in plan.Warnings) _log.LogWarning("Export: {Warning}", w);
         _log.LogDebug("Export query:\n{Dax}", dax);
 
@@ -242,6 +244,8 @@ internal sealed class CsvExportService
         {
             q.Connection = await _xmla.OpenAsync(request.WorkspaceName!, request.DatasetName!, identity, ct);
             q.ConnectedAt = sw.Elapsed;
+            if (_export.ValidateParameterValues)
+                foreach (var p in plan.Parameters) await ValidateParameterAsync(q.Connection, p, ct);
 
             var cmd = q.Command = q.Connection.CreateCommand();
             cmd.CommandText = dax;
@@ -261,6 +265,22 @@ internal sealed class CsvExportService
             q.Dispose();
             throw;
         }
+    }
+
+    /// <summary>
+    /// Rejects (400) M parameter values that aren't in the parameter's bound column, so the
+    /// values that reach the model's M (and its source query) are ones the report offers.
+    /// </summary>
+    private static async Task ValidateParameterAsync(AdomdConnection connection, MParameterValue p, CancellationToken ct)
+    {
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = $"EVALUATE EXCEPT({{{string.Join(", ", p.Literals)}}}, VALUES({p.ColumnRef}))";
+        var unknown = new List<string>();
+        using (var reader = await Task.Run(() => cmd.ExecuteReader(), ct))
+            while (reader.Read()) unknown.Add(DaxQueryBuilder.QuoteString(FormatValue(reader.GetValue(0))));
+        if (unknown.Count > 0)
+            throw new ExportRequestException(
+                $"Dynamic M query parameter {p.Name} can only be set to values of {p.ColumnRef}; not found: {string.Join(", ", unknown)}.");
     }
 
     private sealed class OpenQuery : IDisposable

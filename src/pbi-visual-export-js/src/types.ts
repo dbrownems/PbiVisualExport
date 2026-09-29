@@ -97,6 +97,8 @@ export interface PrepareResponse {
     sort: string;
     reportMeasures?: unknown;
     measureFilters?: unknown;
+    /** Dynamic M query parameters set from filters on their bound columns, e.g. `RegionParam = "West"`. */
+    parameters?: string[];
     warnings?: string[];
     ticket: string;
     ticketExpiresInSeconds: number;
