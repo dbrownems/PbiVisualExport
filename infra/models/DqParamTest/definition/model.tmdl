@@ -6,5 +6,7 @@ model Model
 		legacyRedirects
 		returnErrorValuesAsNull
 
+ref table CategoryPicker
 ref table Region
+ref table RegionPicker
 ref table Sales

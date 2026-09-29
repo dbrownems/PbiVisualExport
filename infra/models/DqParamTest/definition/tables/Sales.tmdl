@@ -73,7 +73,13 @@ table Sales
 		mode: directQuery
 		source =
 				let
-				    Source = Sql.Database(WhServer, WhDatabase, [Query="SELECT SaleId, RegionName, Category, Product, Quantity, Amount, SaleDate FROM dbo.SalesFact WHERE RegionName = '" & RegionParam & "'"])
+				    SqlText = (t as text) as text => "'" & Text.Replace(t, "'", "''") & "'",
+				    Categories = if Value.Is(CategoryParam, List.Type) then CategoryParam else {CategoryParam},
+				    CategoryFilter =
+				        if List.Contains(Categories, "__SelectAll__") then ""
+				        else if List.IsEmpty(Categories) then " AND 1 = 0"
+				        else " AND Category IN (" & Text.Combine(List.Transform(Categories, SqlText), ", ") & ")",
+				    Source = Sql.Database(WhServer, WhDatabase, [Query="SELECT SaleId, RegionName, Category, Product, Quantity, Amount, SaleDate FROM dbo.SalesFact WHERE RegionName = " & SqlText(RegionParam) & CategoryFilter])
 				in
 				    Source
 

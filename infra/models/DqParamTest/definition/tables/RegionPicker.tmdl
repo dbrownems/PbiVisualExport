@@ -1,0 +1,27 @@
+table RegionPicker
+	lineageTag: 66666666-0000-0000-0000-000000000011
+
+	column RegionChoice
+		dataType: string
+		lineageTag: 66666666-0000-0000-0000-000000000012
+		summarizeBy: none
+		sourceColumn: RegionChoice
+
+		extendedProperty ParameterMetadata =
+				{
+				  "version": 2,
+				  "kind": 1
+				}
+
+		annotation SummarizationSetBy = Automatic
+
+	partition RegionPicker = m
+		mode: import
+		source =
+				let
+				    Source = #table(type table [RegionChoice = text], {{"East"}, {"West"}, {"North"}, {"South"}})
+				in
+				    Source
+
+	annotation PBI_ResultType = Table
+

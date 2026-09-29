@@ -1,0 +1,29 @@
+table CategoryPicker
+	lineageTag: 66666666-0000-0000-0000-000000000013
+
+	column CategoryChoice
+		dataType: string
+		lineageTag: 66666666-0000-0000-0000-000000000014
+		summarizeBy: none
+		sourceColumn: CategoryChoice
+
+		extendedProperty ParameterMetadata =
+				{
+				  "version": 2,
+				  "kind": 1,
+				  "supportsMultipleValues": true,
+				  "selectAllValue": "__SelectAll__"
+				}
+
+		annotation SummarizationSetBy = Automatic
+
+	partition CategoryPicker = m
+		mode: import
+		source =
+				let
+				    Source = #table(type table [CategoryChoice = text], {{"Accessories"}, {"Bikes"}, {"Clothing"}})
+				in
+				    Source
+
+	annotation PBI_ResultType = Table
+

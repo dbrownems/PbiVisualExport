@@ -20,13 +20,13 @@
                 "Column": {
                   "Expression": {
                     "SourceRef": {
-                      "Entity": "Region"
+                      "Entity": "RegionPicker"
                     }
                   },
-                  "Property": "RegionName"
+                  "Property": "RegionChoice"
                 }
               },
-              "queryRef": "Region.RegionName",
+              "queryRef": "RegionPicker.RegionChoice",
               "active": true
             }
           ]
@@ -41,6 +41,26 @@
               "expr": {
                 "Literal": {
                   "Value": "'Dropdown'"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "selection": [
+        {
+          "properties": {
+            "singleSelect": {
+              "expr": {
+                "Literal": {
+                  "Value": "true"
+                }
+              }
+            },
+            "selectAllCheckboxEnabled": {
+              "expr": {
+                "Literal": {
+                  "Value": "false"
                 }
               }
             }

@@ -1,5 +1,12 @@
 expression RegionParam = "East" meta [IsParameterQuery=true, Type="Text", IsParameterQueryRequired=true]
 	lineageTag: 55555555-0000-0000-0000-000000000001
+	parameterValuesColumn: RegionPicker.RegionChoice
+
+	annotation PBI_ResultType = Text
+
+expression CategoryParam = "__SelectAll__" meta [IsParameterQuery=true, Type="Text", IsParameterQueryRequired=true]
+	lineageTag: 55555555-0000-0000-0000-000000000004
+	parameterValuesColumn: CategoryPicker.CategoryChoice
 
 	annotation PBI_ResultType = Text
 

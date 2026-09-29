@@ -3,7 +3,7 @@
   "metadata": {
     "type": "Report",
     "displayName": "DqParamReport",
-    "description": "Test report over a DirectQuery model with a Dynamic M query parameter. A slicer rebinds the M parameter (table selection) at query time. Validates that the exporter detects tables bound to dynamic M parameters and augments the generated DAX accordingly."
+    "description": "Test report over a DirectQuery model with two dynamic M query parameters, each bound to a disconnected picker table: RegionParam (single select, slicer1 on RegionPicker) and CategoryParam (multi-select with Select all, slicer2 on CategoryPicker). Validates that the exporter binds the parameters from the visual's filters with DEFINE MPARAMETER, as Power BI does."
   },
   "config": {
     "version": "2.0",
