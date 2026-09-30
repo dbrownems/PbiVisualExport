@@ -193,6 +193,113 @@ describe("slicers", () => {
         assert.equal(page.activated, 1);
         assert.ok(phases.includes("opening-page"));
     });
+
+    test("unreadable slicer with an In selection in the bookmark is translated", async () => {
+        const visual = mockVisual();
+        const slicer = mockVisual({ name: "s1", type: "slicer", getSlicerState: serializationFailed });
+        const filter = { Version: 2, From: [{ Name: "r", Entity: "Region", Type: 0 }], Where: [inCond("r", "RegionName", ["'East'"])] };
+        const general = [{ properties: { filter: { filter } } }];
+        const bookmarkState = await gzipBookmark(bookmarkWith("p1", { s1: { singleVisual: { objects: { merge: { general } } } } }));
+        const { exporter } = setup({ visual, pageVisuals: [visual, slicer], reportOpts: { bookmarkState } });
+        const req = await exporter.buildRequest(visual);
+        assert.deepEqual(req.filters, [basic("Region", "RegionName", "In", ["East"])]);
+    });
+});
+
+// Semantic-query conditions as a bookmark stores them (captured from Power BI).
+const colRef = (source, property) => ({ Column: { Expression: { SourceRef: { Source: source } }, Property: property } });
+const inCond = (source, property, literals) => ({ Condition: { In: {
+    Expressions: [colRef(source, property)], Values: literals.map(v => [{ Literal: { Value: v } }]) } } });
+const notInCond = (source, property, literals) => ({ Condition: { Not: { Expression: inCond(source, property, literals).Condition } } });
+const anyValueCond = (source, property) => ({ Condition: { Comparison: { ComparisonKind: 0, Left: colRef(source, property), Right: { AnyValue: {} } } } });
+const card = (entity, ...where) => ({ type: "Categorical", howCreated: 1,
+    filter: { Version: 2, From: [{ Name: "c", Entity: entity, Type: 0 }], Where: where } });
+const basic = (table, column, operator, values, extra = {}) => ({ $schema: "http://powerbi.com/product/schema#basic",
+    target: { table, column }, filterType: 1, operator, values, requireSingleSelection: false, ...extra });
+// The SDK rejects getFilters() with undefined when a filter card is in the "Select all" state.
+const rejectsUndefined = async () => { throw undefined; };
+
+describe("filter cards the SDK can't read", () => {
+    test("a page card in the \"Select all\" state: the page's filters come from the bookmark", async () => {
+        const visual = mockVisual({ filters: [basic("T", "V", "In", ["v"])] });
+        const page = mockPage({ visuals: [visual] });
+        page.getFilters = rejectsUndefined;
+        const byExpr = [
+            card("CategoryPicker", anyValueCond("c", "CategoryChoice")),
+            card("Sales", inCond("c", "Product", ["'Helmet'", "'O''Neil \"x\"'"])),
+            { type: "Categorical", howCreated: 1 }, // a card with no selection
+        ];
+        const bookmarkState = await gzipBookmark({ explorationState: { sections: { p1: { filters: { byExpr }, visualContainers: {} } } } });
+        const report = mockReport({ pages: [page], bookmarkState });
+        const exporter = createExporter({ report, fetch: mockFetch({}), ...quiet });
+        const req = await exporter.buildRequest(visual);
+        assert.deepEqual(req.filters, [
+            basic("CategoryPicker", "CategoryChoice", "All", [], { selectAll: true }),
+            basic("Sales", "Product", "In", ["Helmet", "O'Neil \"x\""]),
+            basic("T", "V", "In", ["v"]),
+        ]);
+    });
+
+    test("report and visual levels, NotIn and every literal type", async () => {
+        const visual = mockVisual();
+        visual.getFilters = rejectsUndefined;
+        const page = mockPage({ visuals: [visual], filters: [basic("T", "P", "In", ["p"])] });
+        const report = mockReport({ pages: [page] });
+        report.getFilters = rejectsUndefined;
+        const reportCards = [card("Sales", notInCond("c", "Category", ["'Clothing'"]))];
+        const visualCards = [
+            card("Sales", inCond("c", "Quantity", ["3L", "90071992547409930L"])),
+            card("Sales", inCond("c", "Amount", ["419.88D", "1.5M", "-2E+3D"])),
+            card("Sales", inCond("c", "Flag", ["true", "false", "null"])),
+            card("Sales", inCond("c", "SaleDate", ["datetime'2024-01-11T00:00:00'"])),
+            card("CategoryPicker", notInCond("c", "CategoryChoice", [])),
+        ];
+        report.bookmarksManager.capture = async () => ({ state: await gzipBookmark({ explorationState: {
+            filters: { byExpr: reportCards },
+            sections: { p1: { filters: { byExpr: [] }, visualContainers: { v1: { filters: { byExpr: visualCards } } } } },
+        } }) });
+        const exporter = createExporter({ report, fetch: mockFetch({}), ...quiet });
+        const req = await exporter.buildRequest(visual);
+        assert.deepEqual(req.filters, [
+            basic("Sales", "Category", "NotIn", ["Clothing"]),
+            basic("T", "P", "In", ["p"]),
+            basic("Sales", "Quantity", "In", [3, "90071992547409930"]),
+            basic("Sales", "Amount", "In", [419.88, 1.5, -2000]),
+            basic("Sales", "Flag", "In", [true, false, null]),
+            basic("Sales", "SaleDate", "In", ["2024-01-11T00:00:00"]),
+            basic("CategoryPicker", "CategoryChoice", "NotIn", []),
+        ]);
+    });
+
+    test("a bookmark filter that can't be translated aborts the export", async () => {
+        const visual = mockVisual();
+        const page = mockPage({ visuals: [visual] });
+        page.getFilters = rejectsUndefined;
+        const measureFilter = { type: "Advanced", howCreated: 1, filter: { Version: 2, From: [{ Name: "s", Entity: "Sales", Type: 0 }],
+            Where: [{ Condition: { Comparison: { ComparisonKind: 1,
+                Left: { Measure: { Expression: { SourceRef: { Source: "s" } }, Property: "Total Amount" } },
+                Right: { Literal: { Value: "100L" } } } } }] } };
+        const byExpr = [card("CategoryPicker", anyValueCond("c", "CategoryChoice")), measureFilter];
+        const bookmarkState = await gzipBookmark({ explorationState: { sections: { p1: { filters: { byExpr } } } } });
+        const exporter = createExporter({ report: mockReport({ pages: [page], bookmarkState }), fetch: mockFetch({}), ...quiet });
+        await assert.rejects(exporter.buildRequest(visual), e => {
+            assert.equal(e.code, "filtersUnreadable");
+            assert.match(e.message, /page filters/);
+            assert.match(e.message, /can't translate/);
+            return true;
+        });
+    });
+
+    test("no readable bookmark aborts the export", async () => {
+        const visual = mockVisual();
+        const { exporter, report } = setup({ visual });
+        report.getFilters = async () => { throw { message: "boom" }; };
+        await assert.rejects(exporter.buildRequest(visual), e => {
+            assert.equal(e.code, "filtersUnreadable");
+            assert.match(e.message, /report filters \(boom\)/);
+            return true;
+        });
+    });
 });
 
 describe("sort", () => {

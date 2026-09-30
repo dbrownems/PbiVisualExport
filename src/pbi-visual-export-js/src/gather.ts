@@ -67,17 +67,17 @@ export async function gatherFields(visual: PbiVisual): Promise<ExportField[]> {
 
 /**
  * Report, page and visual filters plus the current selection of every slicer on the page.
- * A slicer whose state can't be read aborts the export: dropping it would silently
- * over-export.
+ * Filters and slicers the SDK can't serialize are read from a captured bookmark; one that
+ * can't be read either way aborts the export: dropping it would silently over-export.
  */
 export async function gatherFilters(report: PbiReport, page: PbiPage, visual: PbiVisual,
     onOpeningPage: () => void, signal?: AbortSignal): Promise<PbiFilter[]> {
     const all: PbiFilter[] = [];
     const pushAll = (arr: unknown) => { if (Array.isArray(arr)) for (const f of arr) all.push(f); };
 
-    try { pushAll(await report.getFilters()); } catch { /* none */ }
-    try { pushAll(await page.getFilters()); } catch { /* none */ }
-    try { pushAll(await visual.getFilters()); } catch { /* none */ }
+    pushAll(await levelFilters("report", () => report.getFilters(), report, page, visual));
+    pushAll(await levelFilters("page", () => page.getFilters(), report, page, visual));
+    pushAll(await levelFilters("visual", () => visual.getFilters(), report, page, visual));
 
     let visuals: PbiVisual[] = [];
     try { visuals = await page.getVisuals(); } catch { /* no slicers readable */ }
@@ -124,9 +124,53 @@ export async function gatherFilters(report: PbiReport, page: PbiPage, visual: Pb
     return all;
 }
 
+type FilterLevel = "report" | "page" | "visual";
+
+/**
+ * The filters of one level. The SDK's serializer rejects (with `undefined`) the whole level
+ * when one filter card is in the "Select all" state; the bookmark holds the same filters as
+ * semantic queries (`explorationState.filters`, `.sections[page].filters`,
+ * `.sections[page].visualContainers[visual].filters`).
+ */
+async function levelFilters(level: FilterLevel, read: () => Promise<PbiFilter[]>,
+    report: PbiReport, page: PbiPage, visual: PbiVisual): Promise<PbiFilter[]> {
+    try {
+        const filters = await read();
+        return Array.isArray(filters) ? filters : [];
+    } catch (e) {
+        let holder: any;
+        let fallback: PbiFilter[] | null = null;
+        try {
+            const state = await captureExplorationState(report);
+            const section = state?.sections?.[page.name];
+            holder = level === "report" ? state : level === "page" ? section : section?.visualContainers?.[visual.name];
+            if (holder) fallback = bookmarkFilters(holder.filters);
+        } catch { /* bookmark unreadable */ }
+        if (fallback) return fallback;
+        throw new PbiExportError("filtersUnreadable",
+            `Couldn't read the ${level} filters (${errorText(e)}` +
+            (holder ? "; the bookmark shows a filter the API can't translate yet" : "") +
+            "). Export aborted rather than ignoring them.", { cause: e });
+    }
+}
+
+// A bookmark filters container (`{ byExpr: [...] }`) as SDK filters; null if one can't be
+// translated. A filter card with no selection has no `filter`.
+function bookmarkFilters(container: any): PbiFilter[] | null {
+    const out: PbiFilter[] = [];
+    const entries = [...(Array.isArray(container?.byExpr) ? container.byExpr : []),
+        ...(container?.byName && typeof container.byName === "object" ? Object.values(container.byName) : [])];
+    for (const entry of entries as any[]) {
+        if (!entry?.filter) continue;
+        const filters = queryFilters(entry.filter);
+        if (!filters) return null;
+        out.push(...filters);
+    }
+    return out;
+}
+
 // "no-filter" if the bookmark shows the slicer has no selection, the equivalent filters if
-// it's in the "Select all" state, "filter" if it has another selection, null if it can't be
-// determined.
+// it can be translated, "filter" if it has another selection, null if it can't be determined.
 async function slicerStateFromBookmark(report: PbiReport, page: PbiPage, slicer: PbiVisual): Promise<PbiFilter[] | "filter" | "no-filter" | null> {
     try {
         const vc = (await captureVisualContainers(report, page))[slicer.name];
@@ -134,49 +178,96 @@ async function slicerStateFromBookmark(report: PbiReport, page: PbiPage, slicer:
         const general = vc.singleVisual.objects?.merge?.general || [];
         const filters = general.map((g: any) => g?.properties?.filter).filter((f: any) => f);
         if (filters.length === 0) return "no-filter";
-        const selectAll = filters.map((f: any) => selectAllFilters(f.filter));
-        return selectAll.every((f: PbiFilter[] | null) => f) ? selectAll.flat() as PbiFilter[] : "filter";
+        const translated = filters.map((f: any) => queryFilters(f.filter));
+        return translated.every((f: PbiFilter[] | null) => f) ? translated.flat() as PbiFilter[] : "filter";
     } catch {
         return null;
     }
 }
 
 /**
- * A slicer's "Select all" state as the bookmark stores it: every condition is
- * `column = AnyValue`. Sent as a basic "All" filter with `selectAll: true`, so the server
- * can pass a dynamic M parameter bound to the column its "Select all" value; on any other
- * column it selects everything, like an empty filter. Null for any other filter.
+ * A semantic-query filter (a bookmark's copy of a filter card or slicer selection) as SDK
+ * basic filters, one per condition; null if any condition isn't one of:
+ * - `column = AnyValue`: "Select all" on a column bound to a dynamic M parameter. Sent as
+ *   an "All" filter with `selectAll: true`, so the server can pass the parameter its
+ *   "Select all" value; on any other column it selects everything, like an empty filter.
+ * - `column IN (literals)` / `NOT(column IN (literals))`: "In" / "NotIn".
  */
-function selectAllFilters(query: any): PbiFilter[] | null {
+function queryFilters(query: any): PbiFilter[] | null {
     const from: Record<string, string> = {};
     for (const f of query?.From || []) if (f && f.Name && f.Entity) from[f.Name] = f.Entity;
     const where = query?.Where;
     if (!Array.isArray(where) || where.length === 0) return null;
     const out: PbiFilter[] = [];
     for (const w of where) {
-        const cmp = w?.Condition?.Comparison;
-        const col = cmp?.Left?.Column;
-        const ref = col?.Expression?.SourceRef;
-        const table = ref?.Entity || from[ref?.Source];
-        if (!cmp || cmp.ComparisonKind !== 0 || !cmp.Right || !("AnyValue" in cmp.Right) || !table || !col.Property) return null;
-        out.push({
-            $schema: "http://powerbi.com/product/schema#basic",
-            target: { table, column: col.Property },
-            filterType: 1,
-            operator: "All",
-            values: [],
-            requireSingleSelection: false,
-            selectAll: true,
-        });
+        const filter = conditionFilter(w?.Condition, from);
+        if (!filter) return null;
+        out.push(filter);
     }
     return out;
 }
 
-async function captureVisualContainers(report: PbiReport, page: PbiPage): Promise<Record<string, any>> {
+function conditionFilter(cond: any, from: Record<string, string>): PbiFilter | null {
+    const target = (x: any) => {
+        const col = x?.Column;
+        const ref = col?.Expression?.SourceRef;
+        const table = ref?.Entity || from[ref?.Source];
+        return table && col.Property ? { table, column: col.Property } : null;
+    };
+    const basic = (t: { table: string; column: string }, operator: string, values: unknown[], extra?: object): PbiFilter => ({
+        $schema: "http://powerbi.com/product/schema#basic",
+        target: t, filterType: 1, operator, values, requireSingleSelection: false, ...extra,
+    });
+
+    const cmp = cond?.Comparison;
+    if (cmp) {
+        const t = target(cmp.Left);
+        return t && cmp.ComparisonKind === 0 && cmp.Right && "AnyValue" in cmp.Right
+            ? basic(t, "All", [], { selectAll: true }) : null;
+    }
+    const notIn = cond?.Not?.Expression?.In;
+    const inList = notIn || cond?.In;
+    const exprs = inList?.Expressions, rows = inList?.Values;
+    if (!Array.isArray(exprs) || exprs.length !== 1 || !Array.isArray(rows)) return null;
+    const t = target(exprs[0]);
+    if (!t) return null;
+    const values: unknown[] = [];
+    for (const row of rows) {
+        const v = Array.isArray(row) && row.length === 1 ? literalValue(row[0]) : undefined;
+        if (v === undefined) return null;
+        values.push(v);
+    }
+    return basic(t, notIn ? "NotIn" : "In", values);
+}
+
+/**
+ * A semantic-query literal as a filter value, or undefined if unsupported: `'text'` (quotes
+ * doubled), `3L`, `1.5D`/`1.5M`, `true`, `null`, `datetime'2024-01-11T00:00:00'`. Date/time
+ * literals are report-local wall time with no offset, which the server reads as such.
+ */
+function literalValue(x: any): string | number | boolean | null | undefined {
+    const s = x?.Literal?.Value;
+    if (typeof s !== "string") return undefined;
+    if (s === "null") return null;
+    if (s === "true" || s === "false") return s === "true";
+    let m = /^'([\s\S]*)'$/.exec(s);
+    if (m) return m[1].replace(/''/g, "'");
+    m = /^(-?\d+)L$/.exec(s);
+    if (m) { const n = Number(m[1]); return Number.isSafeInteger(n) ? n : m[1]; }
+    m = /^(-?(?:\d+\.?\d*|\.\d+)(?:E[+-]?\d+)?)[DM]$/i.exec(s);
+    if (m) return Number(m[1]);
+    m = /^(?:datetime|date)'([^']*)'$/.exec(s);
+    return m ? m[1] : undefined;
+}
+
+async function captureExplorationState(report: PbiReport): Promise<any> {
     // allPages: the default capture only includes the active page.
     const bookmark = await report.bookmarksManager.capture({ allPages: true });
-    const state = await decodeBookmarkState(bookmark.state || "");
-    return state?.explorationState?.sections?.[page.name]?.visualContainers || {};
+    return (await decodeBookmarkState(bookmark.state || ""))?.explorationState;
+}
+
+async function captureVisualContainers(report: PbiReport, page: PbiPage): Promise<Record<string, any>> {
+    return (await captureExplorationState(report))?.sections?.[page.name]?.visualContainers || {};
 }
 
 /** A captured bookmark's `state`: base64 of gzip'd JSON ("H4sI...") or of plain JSON. */

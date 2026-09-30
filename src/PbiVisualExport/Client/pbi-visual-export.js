@@ -159,18 +159,9 @@ var PbiVisualExport = (() => {
     const pushAll = (arr) => {
       if (Array.isArray(arr)) for (const f of arr) all.push(f);
     };
-    try {
-      pushAll(await report.getFilters());
-    } catch {
-    }
-    try {
-      pushAll(await page.getFilters());
-    } catch {
-    }
-    try {
-      pushAll(await visual.getFilters());
-    } catch {
-    }
+    pushAll(await levelFilters("report", () => report.getFilters(), report, page, visual));
+    pushAll(await levelFilters("page", () => page.getFilters(), report, page, visual));
+    pushAll(await levelFilters("visual", () => visual.getFilters(), report, page, visual));
     let visuals = [];
     try {
       visuals = await page.getVisuals();
@@ -216,6 +207,42 @@ var PbiVisualExport = (() => {
     }
     return all;
   }
+  async function levelFilters(level, read, report, page, visual) {
+    try {
+      const filters = await read();
+      return Array.isArray(filters) ? filters : [];
+    } catch (e) {
+      let holder;
+      let fallback = null;
+      try {
+        const state = await captureExplorationState(report);
+        const section = state?.sections?.[page.name];
+        holder = level === "report" ? state : level === "page" ? section : section?.visualContainers?.[visual.name];
+        if (holder) fallback = bookmarkFilters(holder.filters);
+      } catch {
+      }
+      if (fallback) return fallback;
+      throw new PbiExportError(
+        "filtersUnreadable",
+        `Couldn't read the ${level} filters (${errorText(e)}` + (holder ? "; the bookmark shows a filter the API can't translate yet" : "") + "). Export aborted rather than ignoring them.",
+        { cause: e }
+      );
+    }
+  }
+  function bookmarkFilters(container) {
+    const out = [];
+    const entries = [
+      ...Array.isArray(container?.byExpr) ? container.byExpr : [],
+      ...container?.byName && typeof container.byName === "object" ? Object.values(container.byName) : []
+    ];
+    for (const entry of entries) {
+      if (!entry?.filter) continue;
+      const filters = queryFilters(entry.filter);
+      if (!filters) return null;
+      out.push(...filters);
+    }
+    return out;
+  }
   async function slicerStateFromBookmark(report, page, slicer) {
     try {
       const vc = (await captureVisualContainers(report, page))[slicer.name];
@@ -223,40 +250,83 @@ var PbiVisualExport = (() => {
       const general = vc.singleVisual.objects?.merge?.general || [];
       const filters = general.map((g) => g?.properties?.filter).filter((f) => f);
       if (filters.length === 0) return "no-filter";
-      const selectAll = filters.map((f) => selectAllFilters(f.filter));
-      return selectAll.every((f) => f) ? selectAll.flat() : "filter";
+      const translated = filters.map((f) => queryFilters(f.filter));
+      return translated.every((f) => f) ? translated.flat() : "filter";
     } catch {
       return null;
     }
   }
-  function selectAllFilters(query) {
+  function queryFilters(query) {
     const from = {};
     for (const f of query?.From || []) if (f && f.Name && f.Entity) from[f.Name] = f.Entity;
     const where = query?.Where;
     if (!Array.isArray(where) || where.length === 0) return null;
     const out = [];
     for (const w of where) {
-      const cmp = w?.Condition?.Comparison;
-      const col = cmp?.Left?.Column;
-      const ref = col?.Expression?.SourceRef;
-      const table = ref?.Entity || from[ref?.Source];
-      if (!cmp || cmp.ComparisonKind !== 0 || !cmp.Right || !("AnyValue" in cmp.Right) || !table || !col.Property) return null;
-      out.push({
-        $schema: "http://powerbi.com/product/schema#basic",
-        target: { table, column: col.Property },
-        filterType: 1,
-        operator: "All",
-        values: [],
-        requireSingleSelection: false,
-        selectAll: true
-      });
+      const filter = conditionFilter(w?.Condition, from);
+      if (!filter) return null;
+      out.push(filter);
     }
     return out;
   }
-  async function captureVisualContainers(report, page) {
+  function conditionFilter(cond, from) {
+    const target = (x) => {
+      const col = x?.Column;
+      const ref = col?.Expression?.SourceRef;
+      const table = ref?.Entity || from[ref?.Source];
+      return table && col.Property ? { table, column: col.Property } : null;
+    };
+    const basic = (t2, operator, values2, extra) => ({
+      $schema: "http://powerbi.com/product/schema#basic",
+      target: t2,
+      filterType: 1,
+      operator,
+      values: values2,
+      requireSingleSelection: false,
+      ...extra
+    });
+    const cmp = cond?.Comparison;
+    if (cmp) {
+      const t2 = target(cmp.Left);
+      return t2 && cmp.ComparisonKind === 0 && cmp.Right && "AnyValue" in cmp.Right ? basic(t2, "All", [], { selectAll: true }) : null;
+    }
+    const notIn = cond?.Not?.Expression?.In;
+    const inList = notIn || cond?.In;
+    const exprs = inList?.Expressions, rows = inList?.Values;
+    if (!Array.isArray(exprs) || exprs.length !== 1 || !Array.isArray(rows)) return null;
+    const t = target(exprs[0]);
+    if (!t) return null;
+    const values = [];
+    for (const row of rows) {
+      const v = Array.isArray(row) && row.length === 1 ? literalValue(row[0]) : void 0;
+      if (v === void 0) return null;
+      values.push(v);
+    }
+    return basic(t, notIn ? "NotIn" : "In", values);
+  }
+  function literalValue(x) {
+    const s = x?.Literal?.Value;
+    if (typeof s !== "string") return void 0;
+    if (s === "null") return null;
+    if (s === "true" || s === "false") return s === "true";
+    let m = /^'([\s\S]*)'$/.exec(s);
+    if (m) return m[1].replace(/''/g, "'");
+    m = /^(-?\d+)L$/.exec(s);
+    if (m) {
+      const n = Number(m[1]);
+      return Number.isSafeInteger(n) ? n : m[1];
+    }
+    m = /^(-?(?:\d+\.?\d*|\.\d+)(?:E[+-]?\d+)?)[DM]$/i.exec(s);
+    if (m) return Number(m[1]);
+    m = /^(?:datetime|date)'([^']*)'$/.exec(s);
+    return m ? m[1] : void 0;
+  }
+  async function captureExplorationState(report) {
     const bookmark = await report.bookmarksManager.capture({ allPages: true });
-    const state = await decodeBookmarkState(bookmark.state || "");
-    return state?.explorationState?.sections?.[page.name]?.visualContainers || {};
+    return (await decodeBookmarkState(bookmark.state || ""))?.explorationState;
+  }
+  async function captureVisualContainers(report, page) {
+    return (await captureExplorationState(report))?.sections?.[page.name]?.visualContainers || {};
   }
   async function decodeBookmarkState(state) {
     const bytes = Uint8Array.from(atob(state), (c) => c.charCodeAt(0));

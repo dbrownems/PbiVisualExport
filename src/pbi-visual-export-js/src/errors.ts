@@ -7,6 +7,8 @@ export type PbiExportErrorCode =
     | "noFields"
     /** A slicer's selection couldn't be read; exporting without it would over-export. */
     | "slicerUnreadable"
+    /** Report, page or visual filters couldn't be read; exporting without them would over-export. */
+    | "filtersUnreadable"
     /** `getDataFields` is missing: load powerbi-report-authoring after powerbi-client. */
     | "authoringApiMissing"
     /** The report's workspace or report ID couldn't be determined. */
