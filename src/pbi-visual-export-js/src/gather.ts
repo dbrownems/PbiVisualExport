@@ -19,6 +19,7 @@ const QUERY_AGGREGATE_FUNCTIONS = ["Sum", "Avg", "DistinctCount", "Min", "Max", 
 
 type Target = {
     table?: string; column?: string | { name?: string; table?: string }; measure?: string | { name?: string; table?: string };
+    hierarchy?: string; hierarchyLevel?: string;
     aggregationFunction?: string; aggregation?: string; role?: string; hidden?: boolean; displayName?: string;
 };
 
@@ -36,6 +37,8 @@ export function mapTarget(t: unknown, role?: string): ExportField | null {
         role: role || x.role || null,
         hidden: x.hidden === true,
     };
+    // A hierarchy level ({table, hierarchy, hierarchyLevel}): the server resolves its column.
+    if (x.hierarchy && x.hierarchyLevel) return { ...field, column: null, measure: null, hierarchy: x.hierarchy, hierarchyLevel: x.hierarchyLevel };
     if (!field.column && !field.measure && x.displayName) field.column = x.displayName;
     if (!field.table && !field.column && !field.measure) return null;
     return field;
@@ -187,11 +190,14 @@ async function slicerStateFromBookmark(report: PbiReport, page: PbiPage, slicer:
 
 /**
  * A semantic-query filter (a bookmark's copy of a filter card or slicer selection) as SDK
- * basic filters, one per condition; null if any condition isn't one of:
+ * filters, one per condition; null if any condition isn't one of:
  * - `column = AnyValue`: "Select all" on a column bound to a dynamic M parameter. Sent as
  *   an "All" filter with `selectAll: true`, so the server can pass the parameter its
  *   "Select all" value; on any other column it selects everything, like an empty filter.
  * - `column IN (literals)` / `NOT(column IN (literals))`: "In" / "NotIn".
+ * - `(c1, c2, …) IN ((literals), …)` and its `NOT`: a tuple filter, "In" / "NotIn" (how a
+ *   bookmark stores a hierarchy slicer's selection).
+ * Columns may be hierarchy levels (`{table, hierarchy, hierarchyLevel}`).
  */
 function queryFilters(query: any): PbiFilter[] | null {
     const from: Record<string, string> = {};
@@ -207,37 +213,60 @@ function queryFilters(query: any): PbiFilter[] | null {
     return out;
 }
 
-function conditionFilter(cond: any, from: Record<string, string>): PbiFilter | null {
-    const target = (x: any) => {
-        const col = x?.Column;
-        const ref = col?.Expression?.SourceRef;
-        const table = ref?.Entity || from[ref?.Source];
+type FilterTarget = { table: string; column: string } | { table: string; hierarchy: string; hierarchyLevel: string };
+
+/**
+ * A semantic-query column or hierarchy level as a filter target. An auto date/time level
+ * (`PropertyVariationSource`) is sent as `{table, hierarchy: <date column>, hierarchyLevel}`;
+ * the server resolves it through the column's date variation.
+ */
+function queryTarget(x: any, from: Record<string, string>): FilterTarget | null {
+    const entity = (e: any) => e?.SourceRef?.Entity || from[e?.SourceRef?.Source];
+    const col = x?.Column;
+    if (col) {
+        const table = entity(col.Expression);
         return table && col.Property ? { table, column: col.Property } : null;
-    };
-    const basic = (t: { table: string; column: string }, operator: string, values: unknown[], extra?: object): PbiFilter => ({
+    }
+    const level = x?.HierarchyLevel;
+    const h = level?.Expression?.Hierarchy;
+    if (!level?.Level || !h) return null;
+    const variation = h.Expression?.PropertyVariationSource;
+    const table = entity(variation ? variation.Expression : h.Expression);
+    const hierarchy = variation ? variation.Property : h.Hierarchy;
+    return table && hierarchy ? { table, hierarchy, hierarchyLevel: level.Level } : null;
+}
+
+function conditionFilter(cond: any, from: Record<string, string>): PbiFilter | null {
+    const basic = (t: FilterTarget, operator: string, values: unknown[], extra?: object): PbiFilter => ({
         $schema: "http://powerbi.com/product/schema#basic",
         target: t, filterType: 1, operator, values, requireSingleSelection: false, ...extra,
     });
 
     const cmp = cond?.Comparison;
     if (cmp) {
-        const t = target(cmp.Left);
+        const t = queryTarget(cmp.Left, from);
         return t && cmp.ComparisonKind === 0 && cmp.Right && "AnyValue" in cmp.Right
             ? basic(t, "All", [], { selectAll: true }) : null;
     }
     const notIn = cond?.Not?.Expression?.In;
     const inList = notIn || cond?.In;
     const exprs = inList?.Expressions, rows = inList?.Values;
-    if (!Array.isArray(exprs) || exprs.length !== 1 || !Array.isArray(rows)) return null;
-    const t = target(exprs[0]);
-    if (!t) return null;
-    const values: unknown[] = [];
+    if (!Array.isArray(exprs) || exprs.length === 0 || !Array.isArray(rows)) return null;
+    const targets = exprs.map((e: any) => queryTarget(e, from));
+    if (targets.some((t: FilterTarget | null) => !t)) return null;
+    const tuples: unknown[][] = [];
     for (const row of rows) {
-        const v = Array.isArray(row) && row.length === 1 ? literalValue(row[0]) : undefined;
-        if (v === undefined) return null;
-        values.push(v);
+        if (!Array.isArray(row) || row.length !== exprs.length) return null;
+        const values = row.map(literalValue);
+        if (values.some(v => v === undefined)) return null;
+        tuples.push(values);
     }
-    return basic(t, notIn ? "NotIn" : "In", values);
+    if (exprs.length === 1) return basic(targets[0]!, notIn ? "NotIn" : "In", tuples.map(t => t[0]));
+    return {
+        $schema: "http://powerbi.com/product/schema#tuple",
+        target: targets, filterType: 6, operator: notIn ? "NotIn" : "In",
+        values: tuples.map(t => t.map(value => ({ value }))),
+    };
 }
 
 /**
@@ -287,9 +316,18 @@ export function mapOrderByExpression(x: any): Omit<ExportSort, "direction"> | nu
     if (!x) return null;
     if (x.Column) return { table: sourceEntity(x.Column)!, column: x.Column.Property };
     if (x.Measure) return { table: sourceEntity(x.Measure)!, measure: x.Measure.Property };
-    const c = x.Aggregation?.Expression?.Column;
-    if (c) return { table: sourceEntity(c)!, column: c.Property, aggregation: QUERY_AGGREGATE_FUNCTIONS[x.Aggregation.Function] || "Sum" };
-    return null; // e.g. hierarchy levels
+    if (x.HierarchyLevel) {
+        const t = queryTarget(x, {});
+        return t && "hierarchy" in t ? { table: t.table, hierarchy: t.hierarchy, hierarchyLevel: t.hierarchyLevel } : null;
+    }
+    const e = x.Aggregation?.Expression;
+    const aggregation = QUERY_AGGREGATE_FUNCTIONS[x.Aggregation?.Function] || "Sum";
+    if (e?.Column) return { table: sourceEntity(e.Column)!, column: e.Column.Property, aggregation };
+    if (e?.HierarchyLevel) {
+        const t = queryTarget(e, {});
+        return t && "hierarchy" in t ? { table: t.table, hierarchy: t.hierarchy, hierarchyLevel: t.hierarchyLevel, aggregation } : null;
+    }
+    return null;
 }
 
 /**

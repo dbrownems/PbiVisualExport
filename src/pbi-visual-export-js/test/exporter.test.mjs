@@ -90,6 +90,22 @@ describe("buildRequest", () => {
             [["Sales", "Qty", null, "Sum"], ["Sales", null, "Margin", null]]);
     });
 
+    test("hierarchy-level targets", async () => {
+        const visual = mockVisual({ roles: ["Rows"], fields: { Rows: [
+            { $schema: "http://powerbi.com/product/schema#hierarchyLevel", table: "Sales", hierarchy: "Calendar", hierarchyLevel: "Year" },
+            { table: "Sales", hierarchy: "Order Date", hierarchyLevel: "Month", aggregationFunction: "Count", displayName: "x" },
+            { table: "Sales", hierarchy: "Calendar" },
+        ] } });
+        const { exporter } = setup({ visual });
+        const req = await exporter.buildRequest(visual);
+        assert.deepEqual(req.fields, [
+            { table: "Sales", column: null, measure: null, hierarchy: "Calendar", hierarchyLevel: "Year", aggregation: null, role: "Rows", hidden: false },
+            { table: "Sales", column: null, measure: null, hierarchy: "Order Date", hierarchyLevel: "Month", aggregation: "Count", role: "Rows", hidden: false },
+            // A hierarchy without a level names nothing the server can read: sent as-is (the server rejects it).
+            { table: "Sales", column: null, measure: null, aggregation: null, role: "Rows", hidden: false },
+        ]);
+    });
+
     test("missing IDs", async () => {
         const { exporter, visual } = setup({ reportOpts: { config: {} } });
         await rejectsWith(exporter.buildRequest(visual), "missingIds");
@@ -204,6 +220,77 @@ describe("slicers", () => {
         const req = await exporter.buildRequest(visual);
         assert.deepEqual(req.filters, [basic("Region", "RegionName", "In", ["East"])]);
     });
+
+    // A hierarchy slicer's selection as the bookmark stores it: "Select all", then clear
+    // North › Electronics (LargeExportReport slicer3d), and a selection of two branches.
+    const tupleCond = (not, exprs, rows) => {
+        const In = { Expressions: exprs, Values: rows.map(r => r.map(v => ({ Literal: { Value: v } }))) };
+        return { Condition: not ? { Not: { Expression: { In } } } : { In } };
+    };
+    const levelRef = (source, hierarchy, level) => ({ HierarchyLevel: { Expression: { Hierarchy: {
+        Expression: { SourceRef: { Source: source } }, Hierarchy: hierarchy } }, Level: level } });
+
+    test("unreadable hierarchy slicer: multi-column In / Not(In) become tuple filters", async () => {
+        const visual = mockVisual();
+        const slicer = mockVisual({ name: "s1", type: "slicer", getSlicerState: serializationFailed });
+        const from = [{ Name: "o", Entity: "Orders", Type: 0 }];
+        const general = [
+            { properties: { filter: { filter: { Version: 2, From: from,
+                Where: [tupleCond(true, [colRef("o", "Region"), colRef("o", "Category")], [["'North'", "'Electronics'"]])] } } } },
+            { properties: { filter: { filter: { Version: 2, From: from,
+                Where: [tupleCond(false, [levelRef("o", "Sales Geography", "Area"), levelRef("o", "Sales Geography", "Line")],
+                    [["'East'", "'Toys'"], ["'West'", "null"]])] } } } },
+        ];
+        const bookmarkState = await gzipBookmark(bookmarkWith("p1", { s1: { singleVisual: { objects: { merge: { general } } } } }));
+        const { exporter } = setup({ visual, pageVisuals: [visual, slicer], reportOpts: { bookmarkState } });
+        const req = await exporter.buildRequest(visual);
+        assert.deepEqual(req.filters, [
+            { $schema: "http://powerbi.com/product/schema#tuple", filterType: 6, operator: "NotIn",
+                target: [{ table: "Orders", column: "Region" }, { table: "Orders", column: "Category" }],
+                values: [[{ value: "North" }, { value: "Electronics" }]] },
+            { $schema: "http://powerbi.com/product/schema#tuple", filterType: 6, operator: "In",
+                target: [{ table: "Orders", hierarchy: "Sales Geography", hierarchyLevel: "Area" },
+                    { table: "Orders", hierarchy: "Sales Geography", hierarchyLevel: "Line" }],
+                values: [[{ value: "East" }, { value: "Toys" }], [{ value: "West" }, { value: null }]] },
+        ]);
+    });
+
+    test("a tuple row that doesn't match its columns aborts the export", async () => {
+        const visual = mockVisual();
+        const slicer = mockVisual({ name: "s1", type: "slicer", getSlicerState: serializationFailed });
+        const filter = { Version: 2, From: [{ Name: "o", Entity: "Orders", Type: 0 }],
+            Where: [tupleCond(false, [colRef("o", "Region"), colRef("o", "Category")], [["'North'"]])] };
+        const bookmarkState = await gzipBookmark(bookmarkWith("p1", { s1: { singleVisual: { objects: { merge: { general: [{ properties: { filter: { filter } } }] } } } } }));
+        const { exporter } = setup({ visual, pageVisuals: [visual, slicer], reportOpts: { bookmarkState } });
+        await rejectsWith(exporter.buildRequest(visual), "slicerUnreadable");
+    });
+});
+
+describe("hierarchy-level filter cards from the bookmark", () => {
+    test("user hierarchy and auto date/time levels become level targets", async () => {
+        const visual = mockVisual();
+        const page = mockPage({ visuals: [visual] });
+        page.getFilters = rejectsUndefined;
+        const level = (hierarchyExpr, hierarchy, lvl) => ({ HierarchyLevel: { Expression: { Hierarchy: {
+            Expression: hierarchyExpr, Hierarchy: hierarchy } }, Level: lvl } });
+        const levelIn = (ref, literals) => ({ Condition: { In: { Expressions: [ref], Values: literals.map(v => [{ Literal: { Value: v } }]) } } });
+        const byExpr = [
+            card("Orders", levelIn(level({ SourceRef: { Source: "c" } }, "Order Calendar", "Year"), ["2024L"])),
+            // Auto date/time: the hierarchy is named after the date column.
+            card("Orders", { Condition: { Not: { Expression: levelIn(level({ PropertyVariationSource: {
+                Expression: { SourceRef: { Source: "c" } }, Name: "Variation", Property: "Order Date" } },
+                "Date Hierarchy", "Month"), ["'March'"]).Condition } } }),
+        ];
+        const bookmarkState = await gzipBookmark({ explorationState: { sections: { p1: { filters: { byExpr }, visualContainers: {} } } } });
+        const exporter = createExporter({ report: mockReport({ pages: [page], bookmarkState }), fetch: mockFetch({}), ...quiet });
+        const req = await exporter.buildRequest(visual);
+        const levelBasic = (hierarchy, hierarchyLevel, operator, values) => ({ ...basic("Orders", "x", operator, values),
+            target: { table: "Orders", hierarchy, hierarchyLevel } });
+        assert.deepEqual(req.filters, [
+            levelBasic("Order Calendar", "Year", "In", [2024]),
+            levelBasic("Order Date", "Month", "NotIn", ["March"]),
+        ]);
+    });
 });
 
 // Semantic-query conditions as a bookmark stores them (captured from Power BI).
@@ -305,11 +392,17 @@ describe("filter cards the SDK can't read", () => {
 describe("sort", () => {
     test("reads the sort from a gzip'd bookmark", async () => {
         const src = e => ({ Expression: { SourceRef: { Entity: e } } });
+        const level = (hierarchyExpression, hierarchy, lvl) =>
+            ({ HierarchyLevel: { Expression: { Hierarchy: { Expression: hierarchyExpression, Hierarchy: hierarchy } }, Level: lvl } });
         const orderBy = [
             { Direction: 2, Expression: { Column: { ...src("Sales"), Property: "Date" } } },
             { Direction: 1, Expression: { Aggregation: { Function: 1, Expression: { Column: { ...src("Sales"), Property: "Qty" } } } } },
             { Direction: 1, Expression: { Measure: { ...src("Sales"), Property: "Margin" } } },
             { Direction: 1, Expression: { HierarchyLevel: {} } },
+            { Direction: 2, Expression: level({ SourceRef: { Entity: "Sales" } }, "Calendar", "Month") },
+            // Auto date/time: the hierarchy is named after the date column.
+            { Direction: 1, Expression: level({ PropertyVariationSource: { ...src("Sales"), Name: "Variation", Property: "Order Date" } }, "Date Hierarchy", "Year") },
+            { Direction: 1, Expression: { Aggregation: { Function: 5, Expression: level({ SourceRef: { Entity: "Sales" } }, "Calendar", "Day") } } },
         ];
         const bookmarkState = await gzipBookmark(bookmarkWith("p1", { v1: { singleVisual: { orderBy } } }));
         const { exporter, visual } = setup({ reportOpts: { bookmarkState } });
@@ -319,6 +412,9 @@ describe("sort", () => {
             { table: "Sales", column: "Date", direction: "Descending" },
             { table: "Sales", column: "Qty", aggregation: "Avg", direction: "Ascending" },
             { table: "Sales", measure: "Margin", direction: "Ascending" },
+            { table: "Sales", hierarchy: "Calendar", hierarchyLevel: "Month", direction: "Descending" },
+            { table: "Sales", hierarchy: "Order Date", hierarchyLevel: "Year", direction: "Ascending" },
+            { table: "Sales", hierarchy: "Calendar", hierarchyLevel: "Day", aggregation: "Count", direction: "Ascending" },
         ]);
         assert.match(req.sortSource, /^bookmark \(1 unsupported/);
     });

@@ -92,6 +92,7 @@ function mapTarget(t, role) {
     role: role || x.role || null,
     hidden: x.hidden === true
   };
+  if (x.hierarchy && x.hierarchyLevel) return { ...field, column: null, measure: null, hierarchy: x.hierarchy, hierarchyLevel: x.hierarchyLevel };
   if (!field.column && !field.measure && x.displayName) field.column = x.displayName;
   if (!field.table && !field.column && !field.measure) return null;
   return field;
@@ -240,40 +241,57 @@ function queryFilters(query) {
   }
   return out;
 }
+function queryTarget(x, from) {
+  const entity = (e) => e?.SourceRef?.Entity || from[e?.SourceRef?.Source];
+  const col = x?.Column;
+  if (col) {
+    const table2 = entity(col.Expression);
+    return table2 && col.Property ? { table: table2, column: col.Property } : null;
+  }
+  const level = x?.HierarchyLevel;
+  const h = level?.Expression?.Hierarchy;
+  if (!level?.Level || !h) return null;
+  const variation = h.Expression?.PropertyVariationSource;
+  const table = entity(variation ? variation.Expression : h.Expression);
+  const hierarchy = variation ? variation.Property : h.Hierarchy;
+  return table && hierarchy ? { table, hierarchy, hierarchyLevel: level.Level } : null;
+}
 function conditionFilter(cond, from) {
-  const target = (x) => {
-    const col = x?.Column;
-    const ref = col?.Expression?.SourceRef;
-    const table = ref?.Entity || from[ref?.Source];
-    return table && col.Property ? { table, column: col.Property } : null;
-  };
-  const basic = (t2, operator, values2, extra) => ({
+  const basic = (t, operator, values, extra) => ({
     $schema: "http://powerbi.com/product/schema#basic",
-    target: t2,
+    target: t,
     filterType: 1,
     operator,
-    values: values2,
+    values,
     requireSingleSelection: false,
     ...extra
   });
   const cmp = cond?.Comparison;
   if (cmp) {
-    const t2 = target(cmp.Left);
-    return t2 && cmp.ComparisonKind === 0 && cmp.Right && "AnyValue" in cmp.Right ? basic(t2, "All", [], { selectAll: true }) : null;
+    const t = queryTarget(cmp.Left, from);
+    return t && cmp.ComparisonKind === 0 && cmp.Right && "AnyValue" in cmp.Right ? basic(t, "All", [], { selectAll: true }) : null;
   }
   const notIn = cond?.Not?.Expression?.In;
   const inList = notIn || cond?.In;
   const exprs = inList?.Expressions, rows = inList?.Values;
-  if (!Array.isArray(exprs) || exprs.length !== 1 || !Array.isArray(rows)) return null;
-  const t = target(exprs[0]);
-  if (!t) return null;
-  const values = [];
+  if (!Array.isArray(exprs) || exprs.length === 0 || !Array.isArray(rows)) return null;
+  const targets = exprs.map((e) => queryTarget(e, from));
+  if (targets.some((t) => !t)) return null;
+  const tuples = [];
   for (const row of rows) {
-    const v = Array.isArray(row) && row.length === 1 ? literalValue(row[0]) : void 0;
-    if (v === void 0) return null;
-    values.push(v);
+    if (!Array.isArray(row) || row.length !== exprs.length) return null;
+    const values = row.map(literalValue);
+    if (values.some((v) => v === void 0)) return null;
+    tuples.push(values);
   }
-  return basic(t, notIn ? "NotIn" : "In", values);
+  if (exprs.length === 1) return basic(targets[0], notIn ? "NotIn" : "In", tuples.map((t) => t[0]));
+  return {
+    $schema: "http://powerbi.com/product/schema#tuple",
+    target: targets,
+    filterType: 6,
+    operator: notIn ? "NotIn" : "In",
+    values: tuples.map((t) => t.map((value) => ({ value })))
+  };
 }
 function literalValue(x) {
   const s = x?.Literal?.Value;
@@ -312,8 +330,17 @@ function mapOrderByExpression(x) {
   if (!x) return null;
   if (x.Column) return { table: sourceEntity(x.Column), column: x.Column.Property };
   if (x.Measure) return { table: sourceEntity(x.Measure), measure: x.Measure.Property };
-  const c = x.Aggregation?.Expression?.Column;
-  if (c) return { table: sourceEntity(c), column: c.Property, aggregation: QUERY_AGGREGATE_FUNCTIONS[x.Aggregation.Function] || "Sum" };
+  if (x.HierarchyLevel) {
+    const t = queryTarget(x, {});
+    return t && "hierarchy" in t ? { table: t.table, hierarchy: t.hierarchy, hierarchyLevel: t.hierarchyLevel } : null;
+  }
+  const e = x.Aggregation?.Expression;
+  const aggregation = QUERY_AGGREGATE_FUNCTIONS[x.Aggregation?.Function] || "Sum";
+  if (e?.Column) return { table: sourceEntity(e.Column), column: e.Column.Property, aggregation };
+  if (e?.HierarchyLevel) {
+    const t = queryTarget(e, {});
+    return t && "hierarchy" in t ? { table: t.table, hierarchy: t.hierarchy, hierarchyLevel: t.hierarchyLevel, aggregation } : null;
+  }
   return null;
 }
 async function gatherSort(report, page, visual) {

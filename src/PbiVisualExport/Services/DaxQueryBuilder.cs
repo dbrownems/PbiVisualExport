@@ -257,6 +257,11 @@ internal sealed class DaxQueryBuilder
             {
                 if (FindMeasure(model, f.Measure!) is null) list.Add(new UnresolvedField($"[{f.Measure}]", f.Measure, false));
             }
+            else if (f.IsHierarchyLevel)
+            {
+                if (FindHierarchyLevelColumn(model, f.Table, f.Hierarchy!, f.HierarchyLevel!) is null)
+                    list.Add(new UnresolvedField(LevelLabel(f.Table, f.Hierarchy!, f.HierarchyLevel!), null, false));
+            }
             else if (!string.IsNullOrEmpty(f.Column) && FindColumn(model, f.Table, f.Column!) is null)
                 list.Add(new UnresolvedField(ColRef(f.Table, f.Column!), null, false));
         }
@@ -268,13 +273,25 @@ internal sealed class DaxQueryBuilder
         foreach (var name in request.Filters.SelectMany(FilterMeasureNames).Distinct(StringComparer.OrdinalIgnoreCase))
             if (FindMeasure(model, name) is null && !list.Any(u => Eq(u.MeasureName, name) && !u.SortOnly))
                 list.Add(new UnresolvedField($"[{name}]", name, false));
-        // Columns of active column filters: a (stale) model without the column can't translate the
-        // filter, or know that it sets a dynamic M parameter.
-        foreach (var (table, column) in request.Filters.Select(ActiveFilterColumn).OfType<(string, string)>())
+        // Columns and hierarchy levels of active column, hierarchy and tuple filters: a (stale) model
+        // without them can't translate the filter, or know that it sets a dynamic M parameter.
+        foreach (var target in request.Filters.SelectMany(ActiveFilterTargets))
         {
-            var label = ColRef(table, column);
-            if (FindColumn(model, table, column) is null && !list.Any(u => Eq(u.Label, label)))
-                list.Add(new UnresolvedField(label, null, false));
+            var table = Str(target, "table");
+            if (string.IsNullOrEmpty(table)) continue;
+            string label;
+            if (Str(target, "column") is { Length: > 0 } column)
+            {
+                if (FindColumn(model, table, column) is not null) continue;
+                label = ColRef(table, column);
+            }
+            else if (Str(target, "hierarchy") is { Length: > 0 } hierarchy && Str(target, "hierarchyLevel") is { Length: > 0 } level)
+            {
+                if (FindHierarchyLevelColumn(model, table, hierarchy, level) is not null) continue;
+                label = TargetLabel(target);
+            }
+            else continue;
+            if (!list.Any(u => Eq(u.Label, label))) list.Add(new UnresolvedField(label, null, false));
         }
         return list;
     }
@@ -285,6 +302,8 @@ internal sealed class DaxQueryBuilder
         var measures = new List<MeasureField>();
         var items = new List<OutputItem>();
         var usedReportMeasures = new List<ReportMeasure>();
+        var warnings = new List<string>(warningsSoFar ?? Array.Empty<string>());
+        request = ResolveHierarchyLevels(request, model);
 
         // A measure not in the model may be a report-level measure (names are unique across both).
         ReportMeasure? UseReportMeasure(string name)
@@ -296,7 +315,16 @@ internal sealed class DaxQueryBuilder
 
         foreach (var f in request.Fields)
         {
-            if (string.IsNullOrWhiteSpace(f.Table)) continue;
+            if (string.IsNullOrWhiteSpace(f.Table))
+            {
+                warnings.Add($"A field of the visual ({f.Role ?? "no role"}) names no table; it was not exported.");
+                continue;
+            }
+            // Dropping a field the visual groups on would export the wrong grain.
+            if (string.IsNullOrEmpty(f.Column) && string.IsNullOrEmpty(f.Measure))
+                throw new ExportRequestException(
+                    $"A field of the visual on table '{f.Table}' ({f.Role ?? "no role"}) is not a column, hierarchy level or " +
+                    "measure the export can read. Export aborted.");
             var table = model.Tables.Find(f.Table);
 
             if (f.IsMeasure)
@@ -336,7 +364,6 @@ internal sealed class DaxQueryBuilder
             throw new ExportRequestException("The visual has no exportable columns or measures (all fields are hidden on the visual).");
 
         var extraGroupBy = GroupByKeyColumns(request, model, dims);
-        var warnings = new List<string>(warningsSoFar ?? Array.Empty<string>());
         var filters = BuildFilters(request.Filters, model, measures, name => UseReportMeasure(name) is not null, warnings,
             new ClientTime(request.TimeZone));
 
@@ -456,7 +483,11 @@ internal sealed class DaxQueryBuilder
                 }
                 keys.Add(new SortKey(DimSortExpression(s.Table, s.Column!), s.Descending));
             }
-            else continue;
+            else
+            {
+                if (s.IsHierarchyLevel) warnings.Add($"Sort hierarchy level {s.Label} not found in the model; ignored.");
+                continue;
+            }
             labels.Add(s.Label);
         }
         description = keys.Count > 0 ? string.Join(", ", labels) + " (visual sort)" : "none";
@@ -535,11 +566,14 @@ internal sealed class DaxQueryBuilder
 
     /// <summary>
     /// Translates the report, page and visual filters and slicer states sent by the client.
-    /// Column targets become filter tables. Measure and implicit-measure targets (visual-level
-    /// value filters such as "Total Sales is greater than 1000") and Top N filters are
-    /// evaluated as Power BI does (see <see cref="FilterSet"/>). A filter on a column bound to a
-    /// dynamic M query parameter also sets the parameter (<c>MPARAMETER</c>). Filters that fail to
-    /// translate are skipped with a warning; a filter measure that doesn't exist fails the export.
+    /// Column and hierarchy-level targets become filter tables, as do hierarchy slicer
+    /// selections and tuple filters (several columns). Measure and implicit-measure targets
+    /// (visual-level value filters such as "Total Sales is greater than 1000") and Top N
+    /// filters are evaluated as Power BI does (see <see cref="FilterSet"/>). A filter on a
+    /// column bound to a dynamic M query parameter also sets the parameter (<c>MPARAMETER</c>).
+    /// Single-column filters that fail to translate are skipped with a warning; a filter
+    /// measure or hierarchy level that doesn't exist, or a multi-column filter that can't be
+    /// translated, fails the export rather than export rows the visual excludes.
     /// </summary>
     private static FilterSet BuildFilters(IEnumerable<JsonElement> filters, TOM.Model model, List<MeasureField> measures,
         Func<string, bool> isReportMeasure, List<string> warnings, ClientTime time)
@@ -552,10 +586,17 @@ internal sealed class DaxQueryBuilder
             if (filter.ValueKind != JsonValueKind.Object || !filter.TryGetProperty("target", out var target)) continue;
             if (target.ValueKind == JsonValueKind.Array)
             {
-                // Hierarchy slicer (filterType 9, hierarchyData) or tuple filter (filterType 6, values).
-                if ((filter.TryGetProperty("hierarchyData", out var hd) && hd.ValueKind == JsonValueKind.Array && hd.GetArrayLength() > 0) ||
-                    (filter.TryGetProperty("values", out var tv) && tv.ValueKind == JsonValueKind.Array && tv.GetArrayLength() > 0))
-                    warnings.Add($"Multi-column filter on {string.Join(" > ", target.EnumerateArray().Select(TargetLabel))} is not supported; ignored.");
+                try
+                {
+                    if (TranslateMultiColumnFilter(filter, target, model, bindings, time) is { } multi) set.Columns.Add(multi);
+                }
+                catch (ExportRequestException) { throw; }
+                catch (Exception ex)
+                {
+                    throw new ExportRequestException(
+                        $"The filter on {MultiTargetLabel(target)} could not be translated ({ex.Message}). " +
+                        "Export aborted rather than ignoring it.");
+                }
                 continue;
             }
             if (target.ValueKind != JsonValueKind.Object) continue;
@@ -563,14 +604,13 @@ internal sealed class DaxQueryBuilder
             {
                 if (IsTopN(filter)) AddTopN(filter, target, model, isReportMeasure, set, warnings);
                 else if (IsMeasureTarget(target)) AddValueFilter(filter, target, model, measures, isReportMeasure, set, warnings, time);
-                else
+                else if (ResolveTargetColumn(target, model) is { } column)
                 {
                     // A filter on a dynamic M parameter's bound column also sets the parameter;
                     // Power BI keeps the column filter as well.
-                    if (bindings.Count > 0 && Str(target, "table") is { } bt && Str(target, "column") is { } bc &&
-                        FindColumn(model, bt, bc) is { } boundColumn && bindings.TryGetValue(boundColumn, out var bound))
+                    if (column.Column is { } boundColumn && bindings.TryGetValue(boundColumn, out var bound))
                         foreach (var b in bound) SelectParameterValues(filter, b, selections, time);
-                    if (TranslateColumnFilter(filter, target, model, time) is { } arg) set.Columns.Add(arg);
+                    if (TranslateColumnFilter(filter, column, time) is { } arg) set.Columns.Add(arg);
                 }
             }
             catch (ExportRequestException) { throw; }
@@ -720,22 +760,29 @@ internal sealed class DaxQueryBuilder
         => filter.TryGetProperty("itemCount", out var c) && c.ValueKind == JsonValueKind.Number && c.TryGetInt64(out var n) ? n : 0;
 
     /// <summary>
-    /// The column an active column filter (basic values, advanced conditions or Top N) targets;
-    /// null for measure targets, hierarchy targets and filters that select everything.
+    /// The columns and hierarchy levels active filters target: a column filter (basic values,
+    /// advanced conditions or Top N), or each level of a hierarchy slicer selection or tuple
+    /// filter. Measure targets and filters that select everything are skipped.
     /// </summary>
-    private static (string Table, string Column)? ActiveFilterColumn(JsonElement filter)
+    private static IEnumerable<JsonElement> ActiveFilterTargets(JsonElement filter)
     {
-        if (filter.ValueKind != JsonValueKind.Object || !filter.TryGetProperty("target", out var target) ||
-            target.ValueKind != JsonValueKind.Object || IsMeasureTarget(target) ||
-            Str(target, "table") is not { Length: > 0 } table || Str(target, "column") is not { Length: > 0 } column)
-            return null;
+        if (filter.ValueKind != JsonValueKind.Object || !filter.TryGetProperty("target", out var target)) yield break;
+        if (target.ValueKind == JsonValueKind.Array)
+        {
+            if (!NonEmptyArray(filter, "hierarchyData") && !NonEmptyArray(filter, "values")) yield break;
+            foreach (var t in target.EnumerateArray())
+                if (t.ValueKind == JsonValueKind.Object && !IsMeasureTarget(t)) yield return t;
+            yield break;
+        }
+        if (target.ValueKind != JsonValueKind.Object || IsMeasureTarget(target)) yield break;
         var active = IsTopN(filter)
             ? TopNCount(filter) > 0
-            : HasConditions(filter) ||
-              (filter.TryGetProperty("values", out var v) && v.ValueKind == JsonValueKind.Array && v.GetArrayLength() > 0 &&
-               !Eq(Str(filter, "operator"), "All"));
-        return active ? (table, column) : null;
+            : HasConditions(filter) || (NonEmptyArray(filter, "values") && !Eq(Str(filter, "operator"), "All"));
+        if (active) yield return target;
     }
+
+    private static bool NonEmptyArray(JsonElement e, string name)
+        => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Array && v.GetArrayLength() > 0;
 
     /// <summary>Measure names referenced by active value and Top N filters.</summary>
     private static IEnumerable<string> FilterMeasureNames(JsonElement filter)
@@ -763,6 +810,10 @@ internal sealed class DaxQueryBuilder
         if (Str(target, "table") is { Length: > 0 } table && Str(target, "column") is { Length: > 0 } column &&
             Str(target, "aggregationFunction") is { Length: > 0 } agg)
             return AggregationExpression(agg, table, column);
+        // An aggregation of a hierarchy level, e.g. Count of 'Orders'[Order Calendar].[Year].
+        if (Str(target, "aggregationFunction") is { Length: > 0 } levelAgg && Str(target, "hierarchy") is { Length: > 0 } &&
+            ResolveTargetColumn(target, model) is { Column: { } levelColumn })
+            return AggregationExpression(levelAgg, levelColumn.Table.Name, levelColumn.Name);
         return null;
     }
 
@@ -812,16 +863,15 @@ internal sealed class DaxQueryBuilder
         var count = TopNCount(filter);
         if (count <= 0 || !filter.TryGetProperty("orderBy", out var orderBy) || orderBy.ValueKind != JsonValueKind.Object)
             return; // not set
-        var table = Str(target, "table");
-        var column = Str(target, "column");
         var order = MeasureTargetExpression(orderBy, model, isReportMeasure);
-        if (string.IsNullOrEmpty(table) || string.IsNullOrEmpty(column) || IsMeasureTarget(target) || order is null)
+        var column = IsMeasureTarget(target) ? null : ResolveTargetColumn(target, model);
+        if (column is null || order is null)
         {
             warnings.Add($"Top N filter on {TargetLabel(target)} by {TargetLabel(orderBy)} is not supported; ignored.");
             return;
         }
         var bottom = Eq(Str(filter, "operator"), "Bottom");
-        var colRef = ColRef(table, column);
+        var colRef = column.Ref;
         set.TopN.Add(new TopNFilter(colRef, count, bottom, order));
         set.Descriptions.Add($"{(bottom ? "Bottom" : "Top")} {count} {colRef} by {order}");
     }
@@ -832,25 +882,96 @@ internal sealed class DaxQueryBuilder
         if (Str(target, "measure") is { } m) return $"[{m}]";
         if (Str(target, "column") is { } c)
             return Str(target, "aggregationFunction") is { } a ? $"{a}({ColRef(table, c)})" : ColRef(table, c);
-        if (Str(target, "hierarchy") is { } h) return $"{QuoteTable(table)} hierarchy [{h}] level [{Str(target, "hierarchyLevel")}]";
+        if (Str(target, "hierarchy") is { } h)
+        {
+            var level = $"{QuoteTable(table)}[{EscBracket(h)}].[{EscBracket(Str(target, "hierarchyLevel") ?? "?")}]";
+            return Str(target, "aggregationFunction") is { } a ? $"{a}({level})" : level;
+        }
         return QuoteTable(table);
     }
+
+    private static string MultiTargetLabel(JsonElement targets)
+        => string.Join(", ", targets.EnumerateArray().Select(t => t.ValueKind == JsonValueKind.Object ? TargetLabel(t) : "?"));
 
     private static string? Str(JsonElement e, string name)
         => e.ValueKind == JsonValueKind.Object && e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String
             ? v.GetString() : null;
 
-    private static string? TranslateColumnFilter(JsonElement filter, JsonElement target, TOM.Model model, ClientTime time)
+    /// <summary>A filter target resolved to a model column: its table, DAX reference and data type.</summary>
+    private sealed record FilterColumn(string Table, string Ref, TOM.DataType DataType, TOM.Column? Column);
+
+    /// <summary>
+    /// The column a filter target refers to: a column target (<c>{table, column}</c>) as sent,
+    /// or a hierarchy level (<c>{table, hierarchy, hierarchyLevel}</c>) resolved to the level's
+    /// column. Null for other targets. A hierarchy level that doesn't exist fails the export:
+    /// ignoring its filter would export rows the visual excludes.
+    /// </summary>
+    private static FilterColumn? ResolveTargetColumn(JsonElement target, TOM.Model model)
     {
-        if (!target.TryGetProperty("table", out var tEl) || !target.TryGetProperty("column", out var cEl))
-            return null; // only column targets supported (skip hierarchy filters)
+        var table = Str(target, "table");
+        if (string.IsNullOrEmpty(table)) return null;
+        if (Str(target, "column") is { Length: > 0 } column)
+        {
+            var col = FindColumn(model, table, column);
+            return new FilterColumn(table, ColRef(table, column), col?.DataType ?? TOM.DataType.String, col);
+        }
+        if (Str(target, "hierarchy") is not { Length: > 0 } hierarchy || Str(target, "hierarchyLevel") is not { Length: > 0 } level)
+            return null;
+        var levelColumn = FindHierarchyLevelColumn(model, table, hierarchy, level)
+            ?? throw new ExportRequestException($"Hierarchy level {TargetLabel(target)} was not found in the semantic model.");
+        return new FilterColumn(levelColumn.Table.Name, ColRef(levelColumn.Table.Name, levelColumn.Name), levelColumn.DataType, levelColumn);
+    }
 
-        var tableName = tEl.GetString();
-        var columnName = cEl.GetString();
-        if (string.IsNullOrEmpty(tableName) || string.IsNullOrEmpty(columnName)) return null;
+    /// <summary>
+    /// The column of a hierarchy level: a user hierarchy of the table or, failing that, the
+    /// auto date/time hierarchy of a date column of that name (the levels of the column's
+    /// default variation hierarchy, in its hidden LocalDateTable).
+    /// </summary>
+    private static TOM.Column? FindHierarchyLevelColumn(TOM.Model model, string table, string hierarchy, string level)
+        => FindHierarchyLevel(model, table, hierarchy, level)?.Column;
 
-        var colRef = $"{QuoteTable(tableName)}[{EscBracket(columnName)}]";
-        var dataType = model.Tables.Find(tableName)?.Columns.Find(columnName)?.DataType ?? TOM.DataType.String;
+    private static TOM.Level? FindHierarchyLevel(TOM.Model model, string table, string hierarchy, string level)
+    {
+        var t = FindTable(model, table);
+        if (t is null) return null;
+        var h = t.Hierarchies.Find(hierarchy) ?? t.Hierarchies.FirstOrDefault(x => Eq(x.Name, hierarchy));
+        if (h is null && (t.Columns.Find(hierarchy) ?? t.Columns.FirstOrDefault(c => Eq(c.Name, hierarchy))) is { } dateColumn)
+            h = (dateColumn.Variations.FirstOrDefault(v => v.IsDefault) ?? dateColumn.Variations.FirstOrDefault())?.DefaultHierarchy;
+        return h is null ? null : h.Levels.Find(level) ?? h.Levels.FirstOrDefault(x => Eq(x.Name, level));
+    }
+
+    private static string LevelLabel(string table, string hierarchy, string level)
+        => $"{QuoteTable(table)}[{EscBracket(hierarchy)}].[{EscBracket(level)}]";
+
+    /// <summary>
+    /// The request with its hierarchy-level fields and sort keys replaced by their level's
+    /// column (on the column's table: an auto date/time level lives in its date table),
+    /// headed by the level name as in the visual and in native export. Levels the model
+    /// doesn't have are left as they are (see <see cref="FindUnresolvedFields"/>).
+    /// </summary>
+    internal static VisualExportRequest ResolveHierarchyLevels(VisualExportRequest request, TOM.Model model)
+    {
+        if (!request.Fields.Any(f => f.IsHierarchyLevel) && !request.Sort.Any(s => s.IsHierarchyLevel)) return request;
+        var fields = request.Fields.Select(f =>
+            f.IsHierarchyLevel && FindHierarchyLevel(model, f.Table, f.Hierarchy!, f.HierarchyLevel!) is { Column: { } c } l
+                ? new ExportField
+                {
+                    Table = c.Table.Name, Column = c.Name, Aggregation = f.Aggregation, Role = f.Role, Hidden = f.Hidden,
+                    Header = !string.IsNullOrEmpty(f.Header) ? f.Header :
+                             !string.IsNullOrEmpty(f.Aggregation) ? $"{f.Aggregation} of {l.Name}" : l.Name,
+                }
+                : f).ToList();
+        var sort = request.Sort.Select(s =>
+            s.IsHierarchyLevel && FindHierarchyLevelColumn(model, s.Table, s.Hierarchy!, s.HierarchyLevel!) is { } c
+                ? new ExportSort { Table = c.Table.Name, Column = c.Name, Aggregation = s.Aggregation, Direction = s.Direction }
+                : s).ToList();
+        return request.WithFieldsAndSort(fields, sort);
+    }
+
+    private static string? TranslateColumnFilter(JsonElement filter, FilterColumn column, ClientTime time)
+    {
+        var colRef = column.Ref;
+        var dataType = column.DataType;
 
         var schema = filter.TryGetProperty("$schema", out var sEl) ? sEl.GetString() ?? "" : "";
 
@@ -889,6 +1010,172 @@ internal sealed class DaxQueryBuilder
 
         return null;
     }
+
+    // ---- Filters on several columns: hierarchy slicer selections and tuple filters ----
+
+    /// <summary>
+    /// A filter on several columns: a hierarchy slicer's selection (filterType 9,
+    /// <c>hierarchyData</c>) or a tuple filter (filterType 6, <c>values</c> = value tuples).
+    /// Targets are columns or hierarchy levels, in level order. Null when it selects
+    /// everything. Anything that can't be translated exactly is a 400: dropping the filter
+    /// would export rows the visual excludes.
+    /// </summary>
+    private static string? TranslateMultiColumnFilter(JsonElement filter, JsonElement target, TOM.Model model,
+        Dictionary<TOM.Column, List<ParameterBinding>> bindings, ClientTime time)
+    {
+        var label = MultiTargetLabel(target);
+        var isHierarchy = filter.TryGetProperty("hierarchyData", out var hierarchyData) && hierarchyData.ValueKind == JsonValueKind.Array;
+        var tuples = isHierarchy || !filter.TryGetProperty("values", out var v) || v.ValueKind != JsonValueKind.Array ? (JsonElement?)null : v;
+        if (!isHierarchy && tuples is null) return null;
+        if ((isHierarchy ? hierarchyData : tuples!.Value).GetArrayLength() == 0) return null;
+
+        var columns = new List<FilterColumn>();
+        foreach (var t in target.EnumerateArray())
+        {
+            var column = t.ValueKind == JsonValueKind.Object && !IsMeasureTarget(t) ? ResolveTargetColumn(t, model) : null;
+            if (column is null)
+                throw new ExportRequestException(
+                    $"The filter on {label} targets {(t.ValueKind == JsonValueKind.Object ? TargetLabel(t) : t.ToString())}, " +
+                    "which is not a column or hierarchy level of the semantic model.");
+            if (column.Column is { } c && bindings.ContainsKey(c))
+                throw new ExportRequestException(
+                    $"The filter on {label} includes {column.Ref}, which is bound to a dynamic M query parameter. " +
+                    "A hierarchy or multi-column filter can't set the parameter: filter the column on its own.");
+            columns.Add(column);
+        }
+        if (columns.Count == 0) return null;
+        return isHierarchy
+            ? TranslateHierarchyFilter(hierarchyData, columns, label, time)
+            : TranslateTupleFilter(filter, tuples!.Value, columns, label, time);
+    }
+
+    /// <summary>
+    /// Tuple filter: <c>In</c> → <c>TREATAS({(v1, v2), …}, c1, c2)</c>; <c>NotIn</c> (sent by
+    /// the client for a multi-column exclusion read from the bookmark) → every other combination.
+    /// </summary>
+    private static string TranslateTupleFilter(JsonElement filter, JsonElement tuples, List<FilterColumn> columns, string label, ClientTime time)
+    {
+        var op = Str(filter, "operator") ?? "In";
+        var notIn = Eq(op, "NotIn");
+        if (!notIn && !Eq(op, "In"))
+            throw new ExportRequestException($"The filter on {label} uses operator '{op}', which is not supported.");
+        var rows = new List<string>();
+        foreach (var tuple in tuples.EnumerateArray())
+        {
+            if (tuple.ValueKind != JsonValueKind.Array || tuple.GetArrayLength() != columns.Count)
+                throw new ExportRequestException($"The filter on {label} has a value that doesn't match its {columns.Count} column(s).");
+            var literals = tuple.EnumerateArray()
+                .Select((e, i) => DaxLiteral(columns[i].DataType, NodeValue(e, label), time)).ToList();
+            rows.Add(literals.Count == 1 ? literals[0] : "(" + string.Join(", ", literals) + ")");
+        }
+        var set = DaxSet(rows.Distinct());
+        var refs = string.Join(", ", columns.Select(c => c.Ref));
+        if (!notIn) return $"TREATAS({set}, {refs})";
+        var key = columns.Count == 1 ? refs : $"({refs})";
+        return $"FILTER({AllColumns(columns)}, NOT({key} IN {set}))";
+    }
+
+    private enum NodeState { Inherited, Selected, NotSelected }
+
+    private sealed record HierarchyNode(JsonElement Value, NodeState State, List<HierarchyNode> Children);
+
+    /// <summary>
+    /// Hierarchy slicer selection. Each node is a value of its level's column, Selected,
+    /// NotSelected or Inherited (the parent's state, the default), with optional child nodes
+    /// for the next level; values that aren't listed also take the parent's state. The
+    /// shallowest explicit nodes give the root's state: Selected nodes pick values out of
+    /// nothing; NotSelected nodes (after "Select all") remove them from everything. The
+    /// result is <c>FILTER(ALL(levels), predicate)</c>.
+    /// </summary>
+    private static string? TranslateHierarchyFilter(JsonElement data, List<FilterColumn> columns, string label, ClientTime time)
+    {
+        var nodes = ParseHierarchyNodes(data, label);
+        var top = new List<NodeState>();
+        void Collect(List<HierarchyNode> level)
+        {
+            foreach (var n in level)
+                if (n.State == NodeState.Inherited) Collect(n.Children);
+                else top.Add(n.State);
+        }
+        Collect(nodes);
+        if (top.Count == 0) return null;
+        if (top.Distinct().Count() > 1)
+            throw new ExportRequestException(
+                $"The hierarchy filter on {label} both selects and deselects values at its top level; it can't be translated exactly.");
+        var predicate = HierarchyPredicate(nodes, 0, top[0] == NodeState.NotSelected, columns, label, time);
+        return predicate == "TRUE()" ? null : $"FILTER({AllColumns(columns)}, {predicate ?? "FALSE()"})";
+    }
+
+    private static List<HierarchyNode> ParseHierarchyNodes(JsonElement nodes, string label)
+    {
+        var list = new List<HierarchyNode>();
+        if (nodes.ValueKind != JsonValueKind.Array) return list;
+        foreach (var n in nodes.EnumerateArray())
+        {
+            var op = Str(n, "operator");
+            var state = op is null || Eq(op, "Inherited") ? NodeState.Inherited
+                : Eq(op, "Selected") ? NodeState.Selected
+                : Eq(op, "NotSelected") ? NodeState.NotSelected
+                : throw new ExportRequestException($"The hierarchy filter on {label} uses operator '{op}', which is not supported.");
+            var children = n.ValueKind == JsonValueKind.Object && n.TryGetProperty("children", out var c)
+                ? ParseHierarchyNodes(c, label) : new List<HierarchyNode>();
+            list.Add(new HierarchyNode(NodeValue(n, label), state, children));
+        }
+        return list;
+    }
+
+    /// <summary>
+    /// The rows a hierarchy selection keeps at one level (and below): null for none,
+    /// <c>TRUE()</c> for all. <paramref name="selected"/> is the parent's state.
+    /// </summary>
+    private static string? HierarchyPredicate(List<HierarchyNode> nodes, int depth, bool selected,
+        List<FilterColumn> columns, string label, ClientTime time)
+    {
+        if (nodes.Count == 0) return selected ? "TRUE()" : null;
+        if (depth >= columns.Count)
+            throw new ExportRequestException($"The hierarchy filter on {label} has more levels than its {columns.Count} column(s).");
+        var column = columns[depth];
+        var listed = new List<string>();
+        var whole = new List<string>();    // selected with everything below
+        var partial = new List<string>();  // selected in part
+        foreach (var n in nodes)
+        {
+            var literal = DaxLiteral(column.DataType, n.Value, time);
+            listed.Add(literal);
+            var nodeSelected = n.State switch { NodeState.Selected => true, NodeState.NotSelected => false, _ => selected };
+            var below = HierarchyPredicate(n.Children, depth + 1, nodeSelected, columns, label, time);
+            if (below == "TRUE()") whole.Add(literal);
+            else if (below is not null) partial.Add($"({column.Ref} IN {{{literal}}} && {below})");
+        }
+        var terms = new List<string>();
+        if (selected)
+        {
+            if (whole.Count == listed.Count) return "TRUE()";
+            terms.Add($"NOT({column.Ref} IN {DaxSet(listed.Distinct())})");
+        }
+        if (whole.Count > 0) terms.Add($"{column.Ref} IN {DaxSet(whole.Distinct())}");
+        terms.AddRange(partial);
+        return terms.Count switch { 0 => null, 1 => terms[0], _ => "(" + string.Join(" || ", terms) + ")" };
+    }
+
+    /// <summary>The value of a tuple element or hierarchy node (<c>{value, keyValues?}</c>), or a bare value.</summary>
+    private static JsonElement NodeValue(JsonElement e, string label)
+    {
+        if (e.ValueKind != JsonValueKind.Object) return e;
+        if (e.TryGetProperty("value", out var v)) return v;
+        throw new ExportRequestException($"The filter on {label} has a value without 'value' (only key values), which is not supported.");
+    }
+
+    /// <summary>Every combination of the columns' values: <c>ALL</c> per table, cross-joined across tables.</summary>
+    private static string AllColumns(List<FilterColumn> columns)
+    {
+        var alls = columns.DistinctBy(c => c.Ref, StringComparer.OrdinalIgnoreCase)
+            .GroupBy(c => c.Table, StringComparer.OrdinalIgnoreCase)
+            .Select(g => $"ALL({string.Join(", ", g.Select(c => c.Ref))})").ToList();
+        return alls.Count == 1 ? alls[0] : $"CROSSJOIN({string.Join(", ", alls)})";
+    }
+
+    private static string DaxSet(IEnumerable<string> literals) => "{" + string.Join(", ", literals) + "}";
 
     private static string? TranslateCondition(JsonElement cond, string colRef, Func<JsonElement, string> literal)
     {

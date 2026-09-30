@@ -71,14 +71,18 @@ internal static class Samples
 {
     /// <summary>
     /// Sales(Region, Amount "#,0.00", Order Date, Is Online, Month Name sorted by Month Number, Month Number hidden;
-    /// measures Total, Count) and a table and column with characters that need escaping.
+    /// measures Total, Count; user hierarchy Geo = Area (Region) › Month (Month Name); auto date/time on
+    /// Order Date = LocalDateTable_1 "Date Hierarchy" Year › Month) and a table and column with characters
+    /// that need escaping.
     /// </summary>
     public static TOM.Model Model()
     {
         var sales = new TOM.Table { Name = "Sales" };
-        sales.Columns.Add(new TOM.DataColumn { Name = "Region", DataType = TOM.DataType.String, SourceColumn = "Region" });
+        var region = new TOM.DataColumn { Name = "Region", DataType = TOM.DataType.String, SourceColumn = "Region" };
+        sales.Columns.Add(region);
         sales.Columns.Add(new TOM.DataColumn { Name = "Amount", DataType = TOM.DataType.Decimal, SourceColumn = "Amount", FormatString = "#,0.00" });
-        sales.Columns.Add(new TOM.DataColumn { Name = "Order Date", DataType = TOM.DataType.DateTime, SourceColumn = "Order Date", FormatString = "yyyy-mm-dd" });
+        var orderDate = new TOM.DataColumn { Name = "Order Date", DataType = TOM.DataType.DateTime, SourceColumn = "Order Date", FormatString = "yyyy-mm-dd" };
+        sales.Columns.Add(orderDate);
         sales.Columns.Add(new TOM.DataColumn { Name = "Is Online", DataType = TOM.DataType.Boolean, SourceColumn = "Is Online" });
         var monthNumber = new TOM.DataColumn { Name = "Month Number", DataType = TOM.DataType.Int64, SourceColumn = "Month Number", IsHidden = true };
         var monthName = new TOM.DataColumn { Name = "Month Name", DataType = TOM.DataType.String, SourceColumn = "Month Name" };
@@ -87,14 +91,34 @@ internal static class Samples
         monthName.SortByColumn = monthNumber;
         sales.Measures.Add(new TOM.Measure { Name = "Total", Expression = "SUM(Sales[Amount])", FormatString = "#,0" });
         sales.Measures.Add(new TOM.Measure { Name = "Count", Expression = "COUNTROWS(Sales)" });
+        var geo = new TOM.Hierarchy { Name = "Geo" };
+        geo.Levels.Add(new TOM.Level { Name = "Area", Ordinal = 0, Column = region });
+        geo.Levels.Add(new TOM.Level { Name = "Month", Ordinal = 1, Column = monthName });
+        sales.Hierarchies.Add(geo);
 
         var odd = new TOM.Table { Name = "O'Brien" };
         odd.Columns.Add(new TOM.DataColumn { Name = "a]b", DataType = TOM.DataType.String, SourceColumn = "ab" });
         odd.Measures.Add(new TOM.Measure { Name = "m]x", Expression = "1" });
 
+        var local = new TOM.Table { Name = "LocalDateTable_1", IsHidden = true };
+        var localDate = new TOM.DataColumn { Name = "Date", DataType = TOM.DataType.DateTime, SourceColumn = "Date" };
+        var localYear = new TOM.DataColumn { Name = "Year", DataType = TOM.DataType.Int64, SourceColumn = "Year" };
+        var localMonth = new TOM.DataColumn { Name = "Month", DataType = TOM.DataType.String, SourceColumn = "Month" };
+        local.Columns.Add(localDate);
+        local.Columns.Add(localYear);
+        local.Columns.Add(localMonth);
+        var dateHierarchy = new TOM.Hierarchy { Name = "Date Hierarchy" };
+        dateHierarchy.Levels.Add(new TOM.Level { Name = "Year", Ordinal = 0, Column = localYear });
+        dateHierarchy.Levels.Add(new TOM.Level { Name = "Month", Ordinal = 1, Column = localMonth });
+        local.Hierarchies.Add(dateHierarchy);
+
         var db = new TOM.Database { Name = "Samples", CompatibilityLevel = 1600, Model = new TOM.Model() };
         db.Model.Tables.Add(sales);
         db.Model.Tables.Add(odd);
+        db.Model.Tables.Add(local);
+        var toLocal = new TOM.SingleColumnRelationship { Name = "OrderDateToLocal", FromColumn = orderDate, ToColumn = localDate };
+        db.Model.Relationships.Add(toLocal);
+        orderDate.Variations.Add(new TOM.Variation { Name = "Variation", Relationship = toLocal, DefaultHierarchy = dateHierarchy, IsDefault = true });
         return db.Model;
     }
 

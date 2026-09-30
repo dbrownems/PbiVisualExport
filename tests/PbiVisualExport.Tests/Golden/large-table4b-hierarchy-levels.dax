@@ -1,0 +1,7 @@
+// columns: c0=Year | c1=Month | c2=Area | c3=Count of Line (measure) | c4=Order Count (measure)
+// sort: Order Month DESC (visual sort)
+DEFINE
+  VAR _summ = SUMMARIZECOLUMNS('Orders'[Order Year], 'Orders'[Order Month], 'Orders'[Region], "m_0", COUNT('Orders'[Category]), "m_1", [Order Count])
+EVALUATE
+SELECTCOLUMNS(_summ, "c0", FORMAT('Orders'[Order Year], "0"), "c1", 'Orders'[Order Month], "c2", 'Orders'[Region], "c3", [m_0], "c4", FORMAT([m_1], "#,0"))
+ORDER BY [c1] DESC

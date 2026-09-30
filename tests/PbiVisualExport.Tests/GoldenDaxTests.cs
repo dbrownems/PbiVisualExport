@@ -92,6 +92,10 @@ public class GoldenDaxTests
         // Report-level measures (one built on another), defined in the query; sorted by one of them.
         new("storesales-rmtable-report-measures", Fixtures.StoreSales, Fixtures.StoreSales,
             () => Fixtures.RequestFromVisual(Fixtures.StoreSales, "Page3", "rmTable")),
+
+        // Hierarchy levels as fields (grouped on the level's column, headed by the level name), an
+        // implicit aggregation of a level, and the visual's saved sort on a level.
+        new("large-table4b-hierarchy-levels", Large, null, () => Fixtures.RequestFromVisual(LargeReport, "Page4", "table4b")),
     };
 
     public static TheoryData<string> Cases()

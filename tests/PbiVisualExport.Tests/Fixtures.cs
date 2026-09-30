@@ -104,11 +104,16 @@ internal static class Fixtures
             foreach (var p in projections.EnumerateArray())
             {
                 var r = VisualDefinition.ParseField(p.GetProperty("field")) ?? throw new InvalidOperationException("Unsupported field in " + path);
-                request.Fields.Add(r.Kind switch
+                var level = r.Level is not null;
+                request.Fields.Add(new ExportField
                 {
-                    VisualFieldKind.Measure => new ExportField { Table = r.Entity, Measure = r.Property, Role = role.Name },
-                    VisualFieldKind.Aggregation => new ExportField { Table = r.Entity, Column = r.Property, Aggregation = r.Aggregation, Role = role.Name },
-                    _ => new ExportField { Table = r.Entity, Column = r.Property, Role = role.Name }
+                    Table = r.Entity,
+                    Measure = r.Kind == VisualFieldKind.Measure ? r.Property : null,
+                    Column = r.Kind == VisualFieldKind.Measure || level ? null : r.Property,
+                    Hierarchy = level ? r.Property : null,
+                    HierarchyLevel = r.Level,
+                    Aggregation = r.Aggregation,
+                    Role = role.Name
                 });
             }
         }
@@ -116,11 +121,14 @@ internal static class Fixtures
             foreach (var s in sort.EnumerateArray())
             {
                 var r = VisualDefinition.ParseField(s.GetProperty("field"))!;
+                var level = r.Level is not null;
                 request.Sort.Add(new ExportSort
                 {
                     Table = r.Entity,
-                    Column = r.Kind == VisualFieldKind.Measure ? null : r.Property,
+                    Column = r.Kind == VisualFieldKind.Measure || level ? null : r.Property,
                     Measure = r.Kind == VisualFieldKind.Measure ? r.Property : null,
+                    Hierarchy = level ? r.Property : null,
+                    HierarchyLevel = r.Level,
                     Aggregation = r.Aggregation,
                     Direction = s.TryGetProperty("direction", out var d) ? d.GetString() : null
                 });

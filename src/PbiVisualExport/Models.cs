@@ -3,14 +3,24 @@ using System.Text.Json.Serialization;
 
 namespace PbiVisualExport;
 
-/// <summary>One field (column or measure) placed in a visual.</summary>
+/// <summary>One field (column, hierarchy level or measure) placed in a visual.</summary>
 public sealed class ExportField
 {
     public string Table { get; set; } = "";
     public string? Column { get; set; }
     public string? Measure { get; set; }
 
-    /// <summary>Implicit aggregation on a column field (Sum, Avg, Count, Min, Max...).</summary>
+    /// <summary>
+    /// With <see cref="HierarchyLevel"/>: a level of a hierarchy placed on the visual (a user
+    /// hierarchy, or a date column's auto date/time hierarchy named after the column). The
+    /// server exports the level's column, headed by the level name, as native export does.
+    /// </summary>
+    public string? Hierarchy { get; set; }
+
+    /// <summary>The level of <see cref="Hierarchy"/> (e.g. <c>Year</c>).</summary>
+    public string? HierarchyLevel { get; set; }
+
+    /// <summary>Implicit aggregation on a column (or hierarchy level) field (Sum, Avg, Count, Min, Max...).</summary>
     public string? Aggregation { get; set; }
 
     /// <summary>Visual data role the field is bound to (e.g. Category, Values, Rows).</summary>
@@ -34,17 +44,19 @@ public sealed class ExportField
     public bool Hidden { get; set; }
 
     [JsonIgnore] public bool IsMeasure => !string.IsNullOrEmpty(Measure) || !string.IsNullOrEmpty(Aggregation);
+    [JsonIgnore] internal bool IsHierarchyLevel => !string.IsNullOrEmpty(Hierarchy) && !string.IsNullOrEmpty(HierarchyLevel);
     [JsonIgnore] public string DisplayName =>
         !string.IsNullOrEmpty(Header) ? Header! :
         !string.IsNullOrEmpty(Measure) ? Measure! :
-        !string.IsNullOrEmpty(Aggregation) ? $"{Aggregation} of {Column}" :
+        !string.IsNullOrEmpty(Aggregation) ? $"{Aggregation} of {(IsHierarchyLevel ? HierarchyLevel : Column)}" :
+        IsHierarchyLevel ? HierarchyLevel! :
         Column ?? Table;
 }
 
 /// <summary>
 /// One sort key of the visual (the bookmark's <c>singleVisual.orderBy</c>, which holds the
 /// live sort or, if the user hasn't changed it, the report's saved default sort).
-/// Identifies a column, a measure, or an implicit aggregation of a column.
+/// Identifies a column, a hierarchy level, a measure, or an implicit aggregation of a column.
 /// </summary>
 public sealed class ExportSort
 {
@@ -53,13 +65,19 @@ public sealed class ExportSort
     public string? Measure { get; set; }
     public string? Aggregation { get; set; }
 
+    /// <summary>With <see cref="HierarchyLevel"/>: a hierarchy level (see <see cref="ExportField.Hierarchy"/>).</summary>
+    public string? Hierarchy { get; set; }
+    public string? HierarchyLevel { get; set; }
+
     /// <summary>"Ascending" or "Descending".</summary>
     public string? Direction { get; set; }
 
     [JsonIgnore] public bool Descending => string.Equals(Direction, "Descending", StringComparison.OrdinalIgnoreCase);
+    [JsonIgnore] internal bool IsHierarchyLevel => !string.IsNullOrEmpty(Hierarchy) && !string.IsNullOrEmpty(HierarchyLevel);
     [JsonIgnore] public string Label =>
         (!string.IsNullOrEmpty(Measure) ? Measure! :
-         !string.IsNullOrEmpty(Aggregation) ? $"{Aggregation}({Column})" : Column ?? Table) +
+         !string.IsNullOrEmpty(Aggregation) ? $"{Aggregation}({Column})" :
+         IsHierarchyLevel ? $"{Hierarchy}.{HierarchyLevel}" : Column ?? Table) +
         (Descending ? " DESC" : " ASC");
 }
 
@@ -131,6 +149,14 @@ public sealed class VisualExportRequest
     {
         var copy = (VisualExportRequest)MemberwiseClone();
         copy.Sort = sort;
+        return copy;
+    }
+
+    /// <summary>A shallow copy with <paramref name="fields"/> and <paramref name="sort"/>.</summary>
+    internal VisualExportRequest WithFieldsAndSort(List<ExportField> fields, List<ExportSort> sort)
+    {
+        var copy = WithSort(sort);
+        copy.Fields = fields;
         return copy;
     }
 }

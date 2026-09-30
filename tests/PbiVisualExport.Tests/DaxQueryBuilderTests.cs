@@ -224,16 +224,214 @@ public class DaxQueryBuilderTests
     }
 
     [Fact]
-    public void EmptyAndHierarchyFilters_AreSkipped_MultiColumnFiltersWarn()
+    public void EmptyFilters_AreSkipped()
     {
         var r = Samples.Request(Samples.Column("Sales", "Region"));
         r.Filters.Add(Fixtures.Filter(Basic("Region", "In", "[]")));
-        r.Filters.Add(Fixtures.Filter("""{"$schema":"http://powerbi.com/product/schema#basic","target":{"table":"Sales","hierarchy":"H","hierarchyLevel":"L"},"operator":"In","values":["a"]}"""));
-        r.Filters.Add(Fixtures.Filter("""{"$schema":"http://powerbi.com/product/schema#hierarchy","target":[{"table":"Sales","column":"Region"},{"table":"Sales","column":"Month Name"}],"filterType":9,"hierarchyData":[{"operator":"Selected","value":"East"}]}"""));
-        r.Filters.Add(Fixtures.Filter("""{"target":[{"table":"Sales","column":"Region"}],"filterType":6,"values":[]}"""));
+        r.Filters.Add(Fixtures.Filter(Hierarchy("[]")));
+        r.Filters.Add(Fixtures.Filter("""{"target":[{"table":"Sales","column":"Region"}],"filterType":6,"operator":"In","values":[]}"""));
+        // Only Inherited nodes: nothing is selected or deselected.
+        r.Filters.Add(Fixtures.Filter(Hierarchy("""[{"operator":"Inherited","value":"East"}]""")));
         var plan = Build(r);
-        Assert.Equal("Multi-column filter on 'Sales'[Region] > 'Sales'[Month Name] is not supported; ignored.", Assert.Single(plan.Warnings));
+        Assert.Empty(plan.Warnings);
         Assert.DoesNotContain("VAR _f", plan.BuildQuery());
+    }
+
+    // ---- Hierarchy levels, hierarchy slicers and tuple filters ----
+
+    private const string RegionMonth = """[{"table":"Sales","column":"Region"},{"table":"Sales","column":"Month Name"}]""";
+
+    private static string Hierarchy(string data, string targets = RegionMonth) =>
+        $$"""{"$schema":"http://powerbi.com/product/schema#hierarchy","target":{{targets}},"filterType":9,"hierarchyData":{{data}}}""";
+
+    private static string Tuple(string op, string values, string targets = RegionMonth) =>
+        $$"""{"$schema":"http://powerbi.com/product/schema#tuple","target":{{targets}},"filterType":6,"operator":"{{op}}","values":{{values}}}""";
+
+    private static string Level(string hierarchy, string level, string table = "Sales") =>
+        $$"""{"table":"{{table}}","hierarchy":"{{hierarchy}}","hierarchyLevel":"{{level}}"}""";
+
+    [Fact]
+    public void HierarchyLevelTargets_FilterTheLevelsColumn()
+    {
+        var r = Samples.Request(Samples.Column("Sales", "Region"), Samples.Measure("Sales", "Total"));
+        r.Filters.Add(Fixtures.Filter($$"""{"$schema":"http://powerbi.com/product/schema#basic","target":{{Level("Geo", "Area")}},"filterType":1,"operator":"In","values":["East"]}"""));
+        r.Filters.Add(Fixtures.Filter(Advanced(Level("geo", "month"), "And", """[{"operator":"IsNot","value":"March"}]""")));
+        // Auto date/time: the hierarchy is named after the date column; its levels are the LocalDateTable's.
+        r.Filters.Add(Fixtures.Filter($$"""{"$schema":"http://powerbi.com/product/schema#basic","target":{{Level("Order Date", "Year")}},"filterType":1,"operator":"NotIn","values":[2023]}"""));
+        r.Filters.Add(Fixtures.Filter($$$"""{"$schema":"http://powerbi.com/product/schema#topN","target":{{{Level("Geo", "Area")}}},"filterType":5,"operator":"Top","itemCount":3,"orderBy":{"table":"Sales","measure":"Total"}}"""));
+        r.Filters.Add(Fixtures.Filter(Advanced("""{"table":"Sales","hierarchy":"Geo","hierarchyLevel":"Month","aggregationFunction":"Count"}""", "And",
+            """[{"operator":"GreaterThan","value":1}]""")));
+        var plan = Build(r);
+        var q = plan.BuildQuery();
+
+        Assert.Empty(plan.Warnings);
+        Assert.Contains("VAR _f0 = TREATAS({\"East\"}, 'Sales'[Region])", q);
+        Assert.Contains("VAR _f1 = FILTER(ALL('Sales'[Month Name]), 'Sales'[Month Name] <> \"March\")", q);
+        Assert.Contains("VAR _f2 = FILTER(ALL('LocalDateTable_1'[Year]), NOT('LocalDateTable_1'[Year] IN {2023}))", q);
+        Assert.Contains("VAR _tn0 = TOPN(3, SUMMARIZECOLUMNS('Sales'[Region], _f0, _f1, _f2, \"tn\", [Total]), [tn], 0)", q);
+        Assert.Contains("\"vf_0\", IGNORE(COUNT('Sales'[Month Name]))", q);
+        Assert.Equal(new[] { "Top 3 'Sales'[Region] by [Total]", "COUNT('Sales'[Month Name]) > 1" }, plan.MeasureFilters);
+    }
+
+    [Fact]
+    public void UnknownHierarchyLevel_IsUnresolved_AndFailsTheExport()
+    {
+        var r = Samples.Request(Samples.Column("Sales", "Region"));
+        r.Filters.Add(Fixtures.Filter($$"""{"$schema":"http://powerbi.com/product/schema#basic","target":{{Level("Geo", "Nope")}},"filterType":1,"operator":"In","values":["a"]}"""));
+        r.Filters.Add(Fixtures.Filter(Hierarchy("""[{"operator":"Selected","value":"East"}]""", $"[{Level("Gone", "Area")}]")));
+        // Inactive filters aren't checked.
+        r.Filters.Add(Fixtures.Filter($$"""{"$schema":"http://powerbi.com/product/schema#basic","target":{{Level("Unused", "L")}},"filterType":1,"operator":"In","values":[]}"""));
+
+        Assert.Equal(new[] { "'Sales'[Geo].[Nope]", "'Sales'[Gone].[Area]" },
+            DaxQueryBuilder.FindUnresolvedFields(r, Model).Select(u => u.Label));
+        var ex = Assert.Throws<ExportRequestException>(() => Build(r));
+        Assert.Equal("Hierarchy level 'Sales'[Geo].[Nope] was not found in the semantic model.", ex.Message);
+    }
+
+    private static ExportField LevelField(string hierarchy, string level, string? aggregation = null) =>
+        new() { Table = "Sales", Hierarchy = hierarchy, HierarchyLevel = level, Aggregation = aggregation, Role = "Values" };
+
+    [Fact]
+    public void HierarchyLevelFields_ExportTheLevelsColumn_HeadedByTheLevel()
+    {
+        // A level always wins over a column sent alongside it.
+        var area = LevelField("Geo", "Area");
+        area.Column = "Amount";
+        var r = Samples.Request(area, LevelField("geo", "month"), LevelField("Order Date", "Year"), LevelField("Order Date", "Year", "Count"),
+            Samples.Measure("Sales", "Total"));
+        r.Sort.Add(new ExportSort { Table = "Sales", Hierarchy = "Geo", HierarchyLevel = "Month", Direction = "Descending" });
+        r.Sort.Add(new ExportSort { Table = "Sales", Hierarchy = "Order Date", HierarchyLevel = "Year" });
+
+        Assert.Empty(DaxQueryBuilder.FindUnresolvedFields(r, Model));
+        var plan = Build(r);
+        var q = plan.BuildQuery();
+
+        Assert.Empty(plan.Warnings);
+        Assert.Equal(new[] { "Area", "Month", "Year", "Count of Year", "Total" }, plan.Columns.Select(c => c.Header));
+        Assert.Contains("SUMMARIZECOLUMNS('Sales'[Region], 'Sales'[Month Name], 'LocalDateTable_1'[Year], 'Sales'[Month Number],", q);
+        Assert.Contains("\"m_0\", COUNT('LocalDateTable_1'[Year])", q);
+        // Month is ordered by its Sort By Column, like the column itself.
+        Assert.Contains("\"s0\", 'Sales'[Month Number]", q);
+        Assert.EndsWith("ORDER BY [s0] DESC, [c2] ASC", q);
+        // The request itself isn't changed.
+        Assert.Equal("Geo", r.Fields[0].Hierarchy);
+    }
+
+    [Fact]
+    public void UnknownHierarchyLevelField_IsUnresolved_AndUnknownLevelSortKeyWarns()
+    {
+        var r = Samples.Request(Samples.Column("Sales", "Region"), LevelField("Geo", "Nope"));
+        Assert.Equal(new[] { "'Sales'[Geo].[Nope]" }, DaxQueryBuilder.FindUnresolvedFields(r, Model).Select(u => u.Label));
+
+        var sorted = Samples.Request(Samples.Column("Sales", "Region"));
+        sorted.Sort.Add(new ExportSort { Table = "Sales", Hierarchy = "Geo", HierarchyLevel = "Nope" });
+        Assert.Empty(DaxQueryBuilder.FindUnresolvedFields(sorted, Model));
+        Assert.Contains("Sort hierarchy level Geo.Nope ASC not found in the model; ignored.", Build(sorted).Warnings);
+    }
+
+    [Fact]
+    public void FieldThatNamesNothing_FailsTheExport_AndFieldWithoutTableWarns()
+    {
+        // Silently dropping a field the visual groups on would change the grain.
+        var ex = Assert.Throws<ExportRequestException>(() =>
+            Build(Samples.Request(Samples.Column("Sales", "Region"), new ExportField { Table = "Sales", Role = "Rows" })));
+        Assert.Contains("on table 'Sales' (Rows) is not a column, hierarchy level or measure", ex.Message);
+
+        var plan = Build(Samples.Request(Samples.Column("Sales", "Region"), new ExportField { Role = "Values" }));
+        Assert.Equal(new[] { "Region" }, plan.Columns.Select(c => c.Header));
+        Assert.Contains("A field of the visual (Values) names no table; it was not exported.", plan.Warnings);
+    }
+
+    [Fact]
+    public void HierarchySlicer_SelectedNodes_PickValuesAndBranches()
+    {
+        var r = Samples.Request(Samples.Column("Sales", "Region"));
+        r.Filters.Add(Fixtures.Filter(Hierarchy("""
+            [{"operator":"Selected","value":"East"},
+             {"operator":"Inherited","value":"West","children":[{"operator":"Selected","value":"January"}]},
+             {"operator":"Selected","value":"North","children":[{"operator":"NotSelected","value":"March"}]},
+             {"value":"South","children":[{"operator":"Inherited","value":"May"}]}]
+            """)));
+        var q = Build(r).BuildQuery();
+        Assert.Contains("VAR _f0 = FILTER(ALL('Sales'[Region], 'Sales'[Month Name]), ('Sales'[Region] IN {\"East\"} || " +
+            "('Sales'[Region] IN {\"West\"} && 'Sales'[Month Name] IN {\"January\"}) || " +
+            "('Sales'[Region] IN {\"North\"} && NOT('Sales'[Month Name] IN {\"March\"}))))", q);
+    }
+
+    [Fact]
+    public void HierarchySlicer_AfterSelectAll_NotSelectedNodesExclude()
+    {
+        // LargeExportReport slicer3d: Select all, then clear North › Electronics (and all of South).
+        var r = Samples.Request(Samples.Column("Sales", "Region"));
+        r.Filters.Add(Fixtures.Filter(Hierarchy("""
+            [{"operator":"Inherited","value":"North","children":[{"operator":"NotSelected","value":"March"}]},
+             {"operator":"NotSelected","value":"South"}]
+            """, $"[{Level("Geo", "Area")},{Level("Geo", "Month")}]")));
+        var q = Build(r).BuildQuery();
+        Assert.Contains("VAR _f0 = FILTER(ALL('Sales'[Region], 'Sales'[Month Name]), (NOT('Sales'[Region] IN {\"North\", \"South\"}) || " +
+            "('Sales'[Region] IN {\"North\"} && NOT('Sales'[Month Name] IN {\"March\"}))))", q);
+    }
+
+    [Fact]
+    public void HierarchySlicer_EdgeCases()
+    {
+        var tooDeep = Samples.Request(Samples.Column("Sales", "Region"));
+        tooDeep.Filters.Add(Fixtures.Filter(Hierarchy("""[{"operator":"Selected","value":"East","children":[{"operator":"NotSelected","value":"March"}]}]""",
+            """[{"table":"Sales","column":"Region"}]""")));
+        // A level below the last target that deselects: 400, not a guess.
+        Assert.Contains("more levels than its 1 column(s)", Assert.Throws<ExportRequestException>(() => Build(tooDeep)).Message);
+
+        var mixed = Samples.Request(Samples.Column("Sales", "Region"));
+        mixed.Filters.Add(Fixtures.Filter(Hierarchy("""[{"operator":"Inherited","value":"East","children":[{"operator":"Selected","value":"March","children":[]}]},{"operator":"NotSelected","value":"West"}]""")));
+        Assert.Contains("both selects and deselects", Assert.Throws<ExportRequestException>(() => Build(mixed)).Message);
+
+        // Explicit nodes below Inherited ones set the mode; a deselected node's children can reselect.
+        var nested = Samples.Request(Samples.Column("Sales", "Region"));
+        nested.Filters.Add(Fixtures.Filter(Hierarchy("""[{"operator":"Inherited","value":"East","children":[{"operator":"Selected","value":"March"}]}]""")));
+        nested.Filters.Add(Fixtures.Filter(Hierarchy("""[{"operator":"NotSelected","value":"West","children":[{"operator":"Selected","value":"May"}]}]""")));
+        var q = Build(nested).BuildQuery();
+        Assert.Contains("VAR _f0 = FILTER(ALL('Sales'[Region], 'Sales'[Month Name]), ('Sales'[Region] IN {\"East\"} && 'Sales'[Month Name] IN {\"March\"}))", q);
+        Assert.Contains("VAR _f1 = FILTER(ALL('Sales'[Region], 'Sales'[Month Name]), (NOT('Sales'[Region] IN {\"West\"}) || ('Sales'[Region] IN {\"West\"} && 'Sales'[Month Name] IN {\"May\"})))", q);
+    }
+
+    [Fact]
+    public void HierarchySlicer_AcrossTables_CrossJoinsTheLevels()
+    {
+        var r = Samples.Request(Samples.Column("Sales", "Region"));
+        r.Filters.Add(Fixtures.Filter(Hierarchy("""[{"operator":"Selected","value":"East","children":[]},{"operator":"Inherited","value":null,"children":[{"operator":"Selected","value":"x"}]}]""",
+            """[{"table":"Sales","column":"Region"},{"table":"O'Brien","column":"a]b"}]""")));
+        var q = Build(r).BuildQuery();
+        Assert.Contains("VAR _f0 = FILTER(CROSSJOIN(ALL('Sales'[Region]), ALL('O''Brien'[a]]b])), ('Sales'[Region] IN {\"East\"} || " +
+            "('Sales'[Region] IN {BLANK()} && 'O''Brien'[a]]b] IN {\"x\"})))", q);
+    }
+
+    [Fact]
+    public void TupleFilters_InAndNotIn()
+    {
+        var r = Samples.Request(Samples.Column("Sales", "Region"));
+        r.Filters.Add(Fixtures.Filter(Tuple("In", """[[{"value":"East"},{"value":"January"}],[{"value":"West"},{"value":"March"}]]""")));
+        r.Filters.Add(Fixtures.Filter(Tuple("NotIn", """[[{"value":"North"},{"value":"May"}]]""")));
+        r.Filters.Add(Fixtures.Filter(Tuple("In", """[[true, 2]]""", """[{"table":"Sales","column":"Is Online"},{"table":"Sales","column":"Month Number"}]""")));
+        r.Filters.Add(Fixtures.Filter(Tuple("In", """[[{"value":"East"}]]""", """[{"table":"Sales","column":"Region"}]""")));
+        var q = Build(r).BuildQuery();
+
+        Assert.Contains("VAR _f0 = TREATAS({(\"East\", \"January\"), (\"West\", \"March\")}, 'Sales'[Region], 'Sales'[Month Name])", q);
+        Assert.Contains("VAR _f1 = FILTER(ALL('Sales'[Region], 'Sales'[Month Name]), NOT(('Sales'[Region], 'Sales'[Month Name]) IN {(\"North\", \"May\")}))", q);
+        Assert.Contains("VAR _f2 = TREATAS({(TRUE(), 2)}, 'Sales'[Is Online], 'Sales'[Month Number])", q);
+        Assert.Contains("VAR _f3 = TREATAS({\"East\"}, 'Sales'[Region])", q);
+    }
+
+    [Theory]
+    [InlineData("""{"target":[{"table":"Sales","column":"Region"},{"table":"Sales","measure":"Total"}],"filterType":6,"operator":"In","values":[["a",1]]}""", "which is not a column or hierarchy level")]
+    [InlineData("""{"target":[{"table":"Sales","column":"Region"},{"table":"Sales","column":"Month Name"}],"filterType":6,"operator":"In","values":[["a"]]}""", "doesn't match its 2 column(s)")]
+    [InlineData("""{"target":[{"table":"Sales","column":"Region"}],"filterType":6,"operator":"Contains","values":[["a"]]}""", "uses operator 'Contains'")]
+    [InlineData("""{"target":[{"table":"Sales","column":"Region"}],"filterType":9,"hierarchyData":[{"operator":"Excluded","value":"a"}]}""", "uses operator 'Excluded'")]
+    [InlineData("""{"target":[{"table":"Sales","column":"Region"}],"filterType":9,"hierarchyData":[{"operator":"Selected","keyValues":["a"]}]}""", "only key values")]
+    public void MultiColumnFiltersThatCantBeTranslated_FailTheExport(string filter, string message)
+    {
+        var r = Samples.Request(Samples.Column("Sales", "Region"));
+        r.Filters.Add(Fixtures.Filter(filter));
+        Assert.Contains(message, Assert.Throws<ExportRequestException>(() => Build(r)).Message);
     }
 
     [Fact]
@@ -368,6 +566,16 @@ public class DaxQueryBuilderTests
 
         var ex = Assert.Throws<ExportRequestException>(() => BuildDq(Category("In", """["Bikes"]"""), Category("In", """["Clothing"]""")));
         Assert.Contains("no value in common", ex.Message);
+    }
+
+    [Fact]
+    public void MultiColumnFilterOnABoundColumn_FailsTheExport()
+    {
+        var targets = """[{"table":"RegionPicker","column":"RegionChoice"},{"table":"CategoryPicker","column":"CategoryChoice"}]""";
+        var ex = Assert.Throws<ExportRequestException>(() => BuildDq(Tuple("In", """[["West","Bikes"]]""", targets)));
+        Assert.Contains("'RegionPicker'[RegionChoice], which is bound to a dynamic M query parameter", ex.Message);
+        Assert.Contains("bound to a dynamic M query parameter",
+            Assert.Throws<ExportRequestException>(() => BuildDq(Hierarchy("""[{"operator":"Selected","value":"West"}]""", targets))).Message);
     }
 
     [Fact]

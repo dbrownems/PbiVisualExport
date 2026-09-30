@@ -89,6 +89,13 @@ MEASURES = [
      "DIVIDE(CALCULATE(COUNTROWS(Orders), Orders[Is Returned] = TRUE()), COUNTROWS(Orders))", "0.0%"),
 ]
 
+# User hierarchies: (name, [(level, column)]). Level names differ from the column names, so a
+# filter on a level can only be resolved through the hierarchy.
+HIERARCHIES = [
+    ("Sales Geography", [("Area", "Region"), ("Line", "Category")]),
+    ("Order Calendar", [("Year", "Order Year"), ("Month", "Order Month")]),
+]
+
 
 def tmdl_name(name: str) -> str:
     return f"'{name}'" if any(c in name for c in " .=:'") else name
@@ -117,6 +124,13 @@ def build_tmdl() -> str:
               "",
               "\t\tannotation SummarizationSetBy = Automatic",
               ""]
+    for h, (name, levels) in enumerate(HIERARCHIES):
+        t += [f"\thierarchy {tmdl_name(name)}", f"\t\tlineageTag: {lineage(300 + 10 * h)}", ""]
+        for i, (level, column) in enumerate(levels):
+            t += [f"\t\tlevel {tmdl_name(level)}",
+                  f"\t\t\tlineageTag: {lineage(301 + 10 * h + i)}",
+                  f"\t\t\tcolumn: {tmdl_name(column)}",
+                  ""]
     body = ",\n".join(f'\t\t"{name}", {expr}' for name, _, _, _, _, expr in COLUMNS)
     dax = (
         f"VAR _base = GENERATESERIES(1, {ROWS}, 1)\n"
@@ -145,6 +159,15 @@ def col_field(name: str) -> dict:
     return {"Column": {"Expression": {"SourceRef": {"Entity": "Orders"}}, "Property": name}}
 
 
+def level_proj(hierarchy: str, level: str, active: bool = False) -> dict:
+    p = {"field": {"HierarchyLevel": {"Expression": {"Hierarchy": {
+            "Expression": {"SourceRef": {"Entity": "Orders"}}, "Hierarchy": hierarchy}}, "Level": level}},
+         "queryRef": f"Orders.{hierarchy}.{level}", "nativeQueryRef": f"{hierarchy} {level}"}
+    if active:
+        p["active"] = True
+    return p
+
+
 def col_proj(name: str, active: bool = False) -> dict:
     # `active` marks the current drill level (slicers, matrix rows). Never set it on a
     # tableEx projection: the table then renders ONLY that column.
@@ -169,6 +192,13 @@ def agg_proj(name: str, func: int) -> dict:
             "queryRef": f"{ref}(Orders.{name})", "nativeQueryRef": f"{label} of {name}"}
 
 
+def level_agg_proj(hierarchy: str, level: str, func: int) -> dict:
+    """An implicit aggregation of a hierarchy level (5 = CountNonNull, shown as "Count of <level>")."""
+    ref, label = {5: ("CountNonNull", "Count")}.get(func) or AGG_NAMES[func]
+    return {"field": {"Aggregation": {"Expression": level_proj(hierarchy, level)["field"], "Function": func}},
+            "queryRef": f"{ref}(Orders.{hierarchy}.{level})", "nativeQueryRef": f"{label} of {level}"}
+
+
 def title_obj(text: str) -> dict:
     return {"title": [{"properties": {
         "show": {"expr": {"Literal": {"Value": "true"}}},
@@ -177,9 +207,11 @@ def title_obj(text: str) -> dict:
 
 
 def visual(name: str, vtype: str, pos: tuple, query_state: dict, title: str | None = None,
-           extra: dict | None = None) -> dict:
+           extra: dict | None = None, sort: list[dict] | None = None) -> dict:
     x, y, z, w, h = pos
     v = {"visualType": vtype, "query": {"queryState": query_state}}
+    if sort:
+        v["query"]["sortDefinition"] = {"sort": sort}
     if title:
         v["visualContainerObjects"] = title_obj(title)
     if extra:
@@ -305,11 +337,12 @@ def build_report_files() -> dict[str, object]:
         },
         "definition/pages/pages.json": {
             "$schema": SCHEMA + "pagesMetadata/1.0.0/schema.json",
-            "pageOrder": ["Page1", "Page2", "Page3"],
+            "pageOrder": ["Page1", "Page2", "Page3", "Page4"],
             "activePageName": "Page1",
         },
     }
-    for page, display in (("Page1", "Wide Detail"), ("Page2", "Summary"), ("Page3", "Select All Slicers")):
+    for page, display in (("Page1", "Wide Detail"), ("Page2", "Summary"), ("Page3", "Select All Slicers"),
+                          ("Page4", "Hierarchies")):
         files[f"definition/pages/{page}/page.json"] = {
             "$schema": SCHEMA + "page/1.0.0/schema.json",
             "name": page, "displayName": display, "displayOption": "FitToPage",
@@ -366,6 +399,34 @@ def build_report_files() -> dict[str, object]:
             measure_proj("Order Count"), measure_proj("Total Sales"),
         ]}},
         title="Orders by Year, Region, Category (expect 70 rows)")
+
+    # User hierarchies: a hierarchy slicer on Sales Geography (Area > Line) and a table to
+    # filter. No saved selection: tests set slicer states and level filters through the SDK
+    # (getSlicerState returns a hierarchy filter on the levels). Unfiltered: 6 x 4 x 10 = 240 rows.
+    p4 = "definition/pages/Page4/visuals"
+    files[f"{p4}/slicer4a/visual.json"] = visual(
+        "slicer4a", "slicer", (20, 20, 0, 300, 680),
+        {"Values": {"projections": [level_proj("Sales Geography", "Area", True),
+                                    level_proj("Sales Geography", "Line", True)]}},
+        title="Sales Geography (Area > Line)",
+        extra={"objects": {"selection": [{"properties": {"selectAllCheckboxEnabled": lit("true")}}]}})
+    files[f"{p4}/table4/visual.json"] = visual(
+        "table4", "tableEx", (340, 20, 1, 920, 330),
+        {"Values": {"projections": [
+            col_proj("Order Year"), col_proj("Region"), col_proj("Category"), measure_proj("Order Count"),
+        ]}},
+        title="Orders by Year, Region, Category (hierarchy filters)")
+    # Hierarchy levels as fields (headed by the level name, as native export does), an
+    # implicit aggregation of a level, and a saved sort on a level.
+    month = level_proj("Order Calendar", "Month")
+    files[f"{p4}/table4b/visual.json"] = visual(
+        "table4b", "tableEx", (340, 370, 2, 920, 330),
+        {"Values": {"projections": [
+            level_proj("Order Calendar", "Year"), month, level_proj("Sales Geography", "Area"),
+            level_agg_proj("Sales Geography", "Line", 5), measure_proj("Order Count"),
+        ]}},
+        title="Orders by hierarchy levels (sorted by Month desc)",
+        sort=[{"field": month["field"], "direction": "Descending"}])
     return files
 
 

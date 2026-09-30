@@ -49,12 +49,19 @@ export interface PbiReport {
 
 // ---- Wire contract (version 1) ----
 
-/** A column or measure placed in the visual. */
+/** A column, hierarchy level or measure placed in the visual. */
 export interface ExportField {
     table: string;
     column: string | null;
     measure: string | null;
-    /** Implicit aggregation of a column (Sum, Avg, Count, ...). */
+    /**
+     * With `hierarchyLevel`: a level of a hierarchy on the visual (a user hierarchy, or a date
+     * column's auto date/time hierarchy, named after the column). The server exports the
+     * level's column, headed by the level name.
+     */
+    hierarchy?: string;
+    hierarchyLevel?: string;
+    /** Implicit aggregation of a column or hierarchy level (Sum, Avg, Count, ...). */
     aggregation: string | null;
     /** The visual data role (Category, Values, Rows, ...). */
     role: string | null;
@@ -68,6 +75,9 @@ export interface ExportSort {
     column?: string;
     measure?: string;
     aggregation?: string;
+    /** With `hierarchyLevel`: a hierarchy level (see {@link ExportField.hierarchy}). */
+    hierarchy?: string;
+    hierarchyLevel?: string;
     direction: "Ascending" | "Descending";
 }
 

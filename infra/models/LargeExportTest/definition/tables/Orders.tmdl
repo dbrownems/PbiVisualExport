@@ -289,6 +289,28 @@ table Orders
 
 		annotation SummarizationSetBy = Automatic
 
+	hierarchy 'Sales Geography'
+		lineageTag: 55555555-0000-0000-0000-000000000300
+
+		level Area
+			lineageTag: 55555555-0000-0000-0000-000000000301
+			column: Region
+
+		level Line
+			lineageTag: 55555555-0000-0000-0000-000000000302
+			column: Category
+
+	hierarchy 'Order Calendar'
+		lineageTag: 55555555-0000-0000-0000-000000000310
+
+		level Year
+			lineageTag: 55555555-0000-0000-0000-000000000311
+			column: 'Order Year'
+
+		level Month
+			lineageTag: 55555555-0000-0000-0000-000000000312
+			column: 'Order Month'
+
 	partition Orders = calculated
 		mode: import
 		source =
