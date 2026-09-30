@@ -1,0 +1,7 @@
+// columns: c0=Customer Name | c1=Sum of Nullable Amount (measure) | c2=Average of Nullable Amount (measure) | c3=Count of Nullable Amount (measure) | c4=Min of Nullable Amount (measure) | c5=Max of Nullable Amount (measure) | c6=Count of Nullable Amount (measure) | c7=Median of Nullable Amount (measure) | c8=Standard deviation of Nullable Amount (measure) | c9=Variance of Nullable Amount (measure) | c10=Count of Is Returned (measure) | c11=Order Count (measure)
+// sort: Customer Name ASC (implicit default)
+DEFINE
+  VAR _summ = SUMMARIZECOLUMNS('Orders'[Customer Name], "m_0", SUM('Orders'[Nullable Amount]), "m_1", AVERAGE('Orders'[Nullable Amount]), "m_2", DISTINCTCOUNT('Orders'[Nullable Amount]), "m_3", MIN('Orders'[Nullable Amount]), "m_4", MAX('Orders'[Nullable Amount]), "m_5", COUNTA('Orders'[Nullable Amount]), "m_6", MEDIAN('Orders'[Nullable Amount]), "m_7", STDEV.P('Orders'[Nullable Amount]), "m_8", VAR.P('Orders'[Nullable Amount]), "m_9", COUNTA('Orders'[Is Returned]), "m_10", [Order Count])
+EVALUATE
+SELECTCOLUMNS(_summ, "c0", 'Orders'[Customer Name], "c1", FORMAT([m_0], "#,0.00"), "c2", FORMAT([m_1], "#,0.00"), "c3", [m_2], "c4", FORMAT([m_3], "#,0.00"), "c5", FORMAT([m_4], "#,0.00"), "c6", [m_5], "c7", FORMAT([m_6], "#,0.00"), "c8", FORMAT([m_7], "#,0.00"), "c9", FORMAT([m_8], "#,0.00"), "c10", [m_9], "c11", FORMAT([m_10], "#,0"))
+ORDER BY [c0] ASC

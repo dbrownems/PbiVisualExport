@@ -19,8 +19,7 @@ internal sealed record VisualFieldRef(VisualFieldKind Kind, string Entity, strin
 internal sealed class VisualDefinition
 {
     // semanticQuery QueryAggregateFunction, by code.
-    private static readonly string[] AggregateFunctions =
-        { "Sum", "Avg", "DistinctCount", "Min", "Max", "Count", "Median", "StandardDeviation", "Variance" };
+    private static readonly string[] AggregateFunctions = ImplicitAggregations.ByCode;
 
     private VisualDefinition(string pageName, string name, string? visualType, List<VisualFieldRef> fields, List<VisualFieldRef> sortFields)
     {

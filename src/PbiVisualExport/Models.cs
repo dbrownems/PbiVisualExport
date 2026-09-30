@@ -20,7 +20,11 @@ public sealed class ExportField
     /// <summary>The level of <see cref="Hierarchy"/> (e.g. <c>Year</c>).</summary>
     public string? HierarchyLevel { get; set; }
 
-    /// <summary>Implicit aggregation on a column (or hierarchy level) field (Sum, Avg, Count, Min, Max...).</summary>
+    /// <summary>
+    /// Implicit aggregation on a column (or hierarchy level) field, named as the Power BI SDK's
+    /// <c>getDataFields</c> names it: Sum, Avg, Min, Max, Median, StandardDeviation, Variance,
+    /// <c>CountNonNull</c> ("Count") or <c>Count</c> ("Count (Distinct)").
+    /// </summary>
     public string? Aggregation { get; set; }
 
     /// <summary>Visual data role the field is bound to (e.g. Category, Values, Rows).</summary>
@@ -48,7 +52,7 @@ public sealed class ExportField
     [JsonIgnore] public string DisplayName =>
         !string.IsNullOrEmpty(Header) ? Header! :
         !string.IsNullOrEmpty(Measure) ? Measure! :
-        !string.IsNullOrEmpty(Aggregation) ? $"{Aggregation} of {(IsHierarchyLevel ? HierarchyLevel : Column)}" :
+        !string.IsNullOrEmpty(Aggregation) ? Services.ImplicitAggregations.Header(Aggregation!, IsHierarchyLevel ? HierarchyLevel : Column) :
         IsHierarchyLevel ? HierarchyLevel! :
         Column ?? Table;
 }

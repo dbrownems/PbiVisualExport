@@ -414,7 +414,7 @@ describe("sort", () => {
             { table: "Sales", measure: "Margin", direction: "Ascending" },
             { table: "Sales", hierarchy: "Calendar", hierarchyLevel: "Month", direction: "Descending" },
             { table: "Sales", hierarchy: "Order Date", hierarchyLevel: "Year", direction: "Ascending" },
-            { table: "Sales", hierarchy: "Calendar", hierarchyLevel: "Day", aggregation: "Count", direction: "Ascending" },
+            { table: "Sales", hierarchy: "Calendar", hierarchyLevel: "Day", aggregation: "CountNonNull", direction: "Ascending" },
         ]);
         assert.match(req.sortSource, /^bookmark \(1 unsupported/);
     });

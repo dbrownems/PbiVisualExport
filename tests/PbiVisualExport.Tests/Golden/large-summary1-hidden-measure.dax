@@ -1,4 +1,4 @@
-// columns: c0=Region | c1=Category | c2=Sum of Quantity (measure) | c3=Avg of Unit Price (measure) | c4=Total Sales (measure) | c5=Avg Discount (measure)
+// columns: c0=Region | c1=Category | c2=Sum of Quantity (measure) | c3=Average of Unit Price (measure) | c4=Total Sales (measure) | c5=Avg Discount (measure)
 // sort: Region ASC, Category ASC (implicit default)
 DEFINE
   VAR _summ = SUMMARIZECOLUMNS('Orders'[Region], 'Orders'[Category], "m_0", SUM('Orders'[Quantity]), "m_1", AVERAGE('Orders'[Unit Price]), "m_2", [Total Sales], "m_3", [Avg Discount], "m_4", [Return Rate])

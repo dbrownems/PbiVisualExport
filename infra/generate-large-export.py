@@ -182,8 +182,10 @@ def measure_proj(name: str) -> dict:
             "queryRef": f"Orders.{name}", "nativeQueryRef": name}
 
 
-# Implicit aggregation codes (QueryAggregateFunction): 0=Sum, 1=Avg, 3=Min, 4=Max.
-AGG_NAMES = {0: ("Sum", "Sum"), 1: ("Avg", "Average"), 3: ("Min", "Min"), 4: ("Max", "Max")}
+# Implicit aggregation codes (semanticQuery QueryAggregateFunction): (queryRef function, label).
+AGG_NAMES = {0: ("Sum", "Sum"), 1: ("Avg", "Average"), 2: ("DistinctCount", "Count (Distinct)"),
+             3: ("Min", "Min"), 4: ("Max", "Max"), 5: ("CountNonNull", "Count"), 6: ("Median", "Median"),
+             7: ("StandardDeviation", "Standard deviation"), 8: ("Variance", "Variance")}
 
 
 def agg_proj(name: str, func: int) -> dict:
@@ -193,8 +195,8 @@ def agg_proj(name: str, func: int) -> dict:
 
 
 def level_agg_proj(hierarchy: str, level: str, func: int) -> dict:
-    """An implicit aggregation of a hierarchy level (5 = CountNonNull, shown as "Count of <level>")."""
-    ref, label = {5: ("CountNonNull", "Count")}.get(func) or AGG_NAMES[func]
+    """An implicit aggregation of a hierarchy level (e.g. 5 = CountNonNull, "Count of <level>")."""
+    ref, label = AGG_NAMES[func]
     return {"field": {"Aggregation": {"Expression": level_proj(hierarchy, level)["field"], "Function": func}},
             "queryRef": f"{ref}(Orders.{hierarchy}.{level})", "nativeQueryRef": f"{label} of {level}"}
 
@@ -337,12 +339,12 @@ def build_report_files() -> dict[str, object]:
         },
         "definition/pages/pages.json": {
             "$schema": SCHEMA + "pagesMetadata/1.0.0/schema.json",
-            "pageOrder": ["Page1", "Page2", "Page3", "Page4"],
+            "pageOrder": ["Page1", "Page2", "Page3", "Page4", "Page5"],
             "activePageName": "Page1",
         },
     }
     for page, display in (("Page1", "Wide Detail"), ("Page2", "Summary"), ("Page3", "Select All Slicers"),
-                          ("Page4", "Hierarchies")):
+                          ("Page4", "Hierarchies"), ("Page5", "Aggregations")):
         files[f"definition/pages/{page}/page.json"] = {
             "$schema": SCHEMA + "page/1.0.0/schema.json",
             "name": page, "displayName": display, "displayOption": "FitToPage",
@@ -427,6 +429,16 @@ def build_report_files() -> dict[str, object]:
         ]}},
         title="Orders by hierarchy levels (sorted by Month desc)",
         sort=[{"field": month["field"], "direction": "Descending"}])
+
+    # Every implicit aggregation of a column with BLANKs, over small groups (~40 rows per
+    # customer), so sample vs population statistics and BLANK handling are distinguishable;
+    # plus Count of a Boolean column.
+    files["definition/pages/Page5/visuals/table5/visual.json"] = visual(
+        "table5", "tableEx", (20, 20, 0, 1240, 680),
+        {"Values": {"projections": [col_proj("Customer Name")]
+                    + [agg_proj("Nullable Amount", code) for code in AGG_NAMES]
+                    + [agg_proj("Is Returned", 5), measure_proj("Order Count")]}},
+        title="Nullable Amount aggregated every way, by customer")
     return files
 
 

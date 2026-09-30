@@ -1,4 +1,4 @@
-// columns: c0=Region | c1=Category | c2=Sum of Quantity (measure) | c3=Avg of Unit Price (measure) | c4=Total Sales (measure) | c5=Avg Discount (measure) | c6=Return Rate (measure)
+// columns: c0=Region | c1=Category | c2=Sum of Quantity (measure) | c3=Average of Unit Price (measure) | c4=Total Sales (measure) | c5=Avg Discount (measure) | c6=Return Rate (measure)
 // sort: Region ASC, Category ASC (implicit default)
 // maxRows: 1000
 DEFINE

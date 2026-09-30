@@ -96,6 +96,10 @@ public class GoldenDaxTests
         // Hierarchy levels as fields (grouped on the level's column, headed by the level name), an
         // implicit aggregation of a level, and the visual's saved sort on a level.
         new("large-table4b-hierarchy-levels", Large, null, () => Fixtures.RequestFromVisual(LargeReport, "Page4", "table4b")),
+
+        // Every implicit aggregation Power BI offers (verified against native export: Count (Distinct)
+        // counts BLANK, Count is COUNTA, Standard deviation and Variance are the population forms).
+        new("large-table5-aggregations", Large, null, () => Fixtures.RequestFromVisual(LargeReport, "Page5", "table5")),
     };
 
     public static TheoryData<string> Cases()

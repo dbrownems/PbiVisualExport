@@ -27,11 +27,30 @@ public class VisualFieldValidatorTests
         var r = Fixtures.RequestFromVisual(Report, "Page4", "table4b");
         Assert.Equal(4, r.Fields.Count(f => f.IsHierarchyLevel));
         Assert.True(r.Sort.Single().IsHierarchyLevel);
-        r.Fields.Single(f => f.Aggregation is not null).Aggregation = "CountNonNull"; // as getDataFields reports it
+        Assert.Equal("CountNonNull", r.Fields.Single(f => f.Aggregation is not null).Aggregation); // as getDataFields reports it
         var result = Validate(r);
         Assert.Null(result.Error);
         Assert.Empty(result.Warnings);
         Assert.Single(result.Request.Sort);
+    }
+
+    [Fact]
+    public void Aggregations_AreNamedAsTheSdkNamesThem()
+    {
+        // Code 2 is Count (Distinct), which getDataFields calls "Count"; code 5 is Count ("CountNonNull").
+        var report = Samples.Pbir(("pages/p/visuals/v/visual.json", Samples.VisualJson("v",
+            new[] { Samples.ColumnExpr("Sales", "Region"), Samples.AggExpr("Sales", "Amount", 2) })));
+        FieldValidationResult Check(string aggregation)
+        {
+            var r = Samples.Request(Samples.Column("Sales", "Region"),
+                new ExportField { Table = "Sales", Column = "Amount", Aggregation = aggregation });
+            r.PageName = "p";
+            r.VisualName = "v";
+            return VisualFieldValidator.Validate(r, report, FieldValidationMode.Strict);
+        }
+        Assert.Null(Check("Count").Error);
+        Assert.Null(Check("DistinctCount").Error);
+        Assert.Equal(StatusCodes.Status403Forbidden, Check("CountNonNull").StatusCode);
     }
 
     [Fact]
@@ -191,7 +210,7 @@ public class VisualFieldValidatorTests
             new() { Table = "Sales", Hierarchy = hierarchy, HierarchyLevel = level, Aggregation = aggregation };
         FieldValidationResult Check(VisualExportRequest r) => VisualFieldValidator.Validate(r, report, FieldValidationMode.Strict);
 
-        var ok = Request(Level("geo", "AREA"), Level("Order Date", "Year"), Level("Geo", "Month", "Count"), Samples.Column("Sales", "Region"));
+        var ok = Request(Level("geo", "AREA"), Level("Order Date", "Year"), Level("Geo", "Month", "CountNonNull"), Samples.Column("Sales", "Region"));
         ok.Sort.Add(new ExportSort { Table = "Sales", Hierarchy = "Geo", HierarchyLevel = "Month", Direction = "Descending" });
         ok.Sort.Add(new ExportSort { Table = "Sales", Hierarchy = "Geo", HierarchyLevel = "Area" });
         var result = Check(ok);

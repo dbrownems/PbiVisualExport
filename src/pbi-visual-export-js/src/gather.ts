@@ -13,8 +13,9 @@ export const SKIP_VISUAL_TYPES: ReadonlySet<string> = new Set([
 const FALLBACK_ROLES = ["Category", "Series", "Y", "Values", "Rows", "Columns",
     "Axis", "Legend", "Details", "Group", "Tooltips"];
 
-// semanticQuery QueryAggregateFunction (fabric/item/report/definition/semanticQuery schema).
-const QUERY_AGGREGATE_FUNCTIONS = ["Sum", "Avg", "DistinctCount", "Min", "Max", "Count",
+// semanticQuery QueryAggregateFunction (fabric/item/report/definition/semanticQuery schema), by
+// code, named as getDataFields names them: "Count" is Count (Distinct), "CountNonNull" is Count.
+const QUERY_AGGREGATE_FUNCTIONS = ["Sum", "Avg", "Count", "Min", "Max", "CountNonNull",
     "Median", "StandardDeviation", "Variance"];
 
 type Target = {

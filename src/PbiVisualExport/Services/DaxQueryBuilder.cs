@@ -337,9 +337,10 @@ internal sealed class DaxQueryBuilder
                 else if (!string.IsNullOrEmpty(f.Column) && !string.IsNullOrEmpty(f.Aggregation))
                 {
                     var col = table?.Columns.Find(f.Column);
-                    var expr = AggregationExpression(f.Aggregation!, f.Table, f.Column!);
-                    if (expr is null) continue;
-                    measures.Add(new MeasureField(f.DisplayName, expr, col?.FormatString, f));
+                    var expr = AggregationExpression(f.Aggregation!, f.Table, f.Column!)
+                        ?? throw new ExportRequestException(
+                            $"The visual aggregates '{f.Table}'[{f.Column}] with {f.Aggregation}, which the export can't compute. Export aborted.");
+                    measures.Add(new MeasureField(f.DisplayName, expr, IsCount(f.Aggregation) ? null : col?.FormatString, f));
                 }
                 else continue;
                 // Hidden on the visual: computed (it can decide which rows are non-blank) but not output.
@@ -494,13 +495,7 @@ internal sealed class DaxQueryBuilder
         return keys;
     }
 
-    internal static string NormalizeAggregation(string? aggregation) => (aggregation ?? "").Trim().ToLowerInvariant() switch
-    {
-        "average" => "avg",
-        "countnonnull" => "count",
-        "countdistinct" => "distinctcount",
-        var a => a
-    };
+    internal static string NormalizeAggregation(string? aggregation) => ImplicitAggregations.Normalize(aggregation);
 
     private static bool Eq(string? a, string? b) => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
 
@@ -546,21 +541,11 @@ internal sealed class DaxQueryBuilder
         TOM.DataType.Int64 or TOM.DataType.Double or TOM.DataType.Decimal or
         TOM.DataType.DateTime or TOM.DataType.Boolean;
 
-    private static string? AggregationExpression(string aggregation, string table, string column)
-    {
-        var colRef = $"{QuoteTable(table)}[{EscBracket(column)}]";
-        return aggregation.Trim().ToLowerInvariant() switch
-        {
-            "sum" => $"SUM({colRef})",
-            "avg" or "average" => $"AVERAGE({colRef})",
-            "min" => $"MIN({colRef})",
-            "max" => $"MAX({colRef})",
-            "count" => $"COUNT({colRef})",
-            "countnonnull" => $"COUNT({colRef})",
-            "distinctcount" or "countdistinct" => $"DISTINCTCOUNT({colRef})",
-            _ => $"SUM({colRef})"
-        };
-    }
+    private static bool IsCount(string? aggregation) => ImplicitAggregations.IsCount(aggregation);
+
+    /// <summary>DAX for an implicit aggregation of a column (see <see cref="ImplicitAggregations.Dax"/>).</summary>
+    private static string? AggregationExpression(string aggregation, string table, string column) =>
+        ImplicitAggregations.Dax(aggregation, $"{QuoteTable(table)}[{EscBracket(column)}]");
 
     // ---- Filters ----
 
@@ -809,13 +794,16 @@ internal sealed class DaxQueryBuilder
         }
         if (Str(target, "table") is { Length: > 0 } table && Str(target, "column") is { Length: > 0 } column &&
             Str(target, "aggregationFunction") is { Length: > 0 } agg)
-            return AggregationExpression(agg, table, column);
+            return AggregationExpression(agg, table, column) ?? throw UnsupportedAggregation(target, agg);
         // An aggregation of a hierarchy level, e.g. Count of 'Orders'[Order Calendar].[Year].
         if (Str(target, "aggregationFunction") is { Length: > 0 } levelAgg && Str(target, "hierarchy") is { Length: > 0 } &&
             ResolveTargetColumn(target, model) is { Column: { } levelColumn })
-            return AggregationExpression(levelAgg, levelColumn.Table.Name, levelColumn.Name);
+            return AggregationExpression(levelAgg, levelColumn.Table.Name, levelColumn.Name) ?? throw UnsupportedAggregation(target, levelAgg);
         return null;
     }
+
+    private static ExportRequestException UnsupportedAggregation(JsonElement target, string aggregation) =>
+        new($"Filter on {TargetLabel(target)} uses the aggregation {aggregation}, which the export can't compute. Export aborted.");
 
     /// <summary>
     /// A visual-level filter on a measure's value, evaluated per row of the visual. A measure
@@ -958,7 +946,7 @@ internal sealed class DaxQueryBuilder
                 {
                     Table = c.Table.Name, Column = c.Name, Aggregation = f.Aggregation, Role = f.Role, Hidden = f.Hidden,
                     Header = !string.IsNullOrEmpty(f.Header) ? f.Header :
-                             !string.IsNullOrEmpty(f.Aggregation) ? $"{f.Aggregation} of {l.Name}" : l.Name,
+                             !string.IsNullOrEmpty(f.Aggregation) ? ImplicitAggregations.Header(f.Aggregation!, l.Name) : l.Name,
                 }
                 : f).ToList();
         var sort = request.Sort.Select(s =>

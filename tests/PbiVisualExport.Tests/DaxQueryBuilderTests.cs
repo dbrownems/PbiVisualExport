@@ -259,7 +259,7 @@ public class DaxQueryBuilderTests
         // Auto date/time: the hierarchy is named after the date column; its levels are the LocalDateTable's.
         r.Filters.Add(Fixtures.Filter($$"""{"$schema":"http://powerbi.com/product/schema#basic","target":{{Level("Order Date", "Year")}},"filterType":1,"operator":"NotIn","values":[2023]}"""));
         r.Filters.Add(Fixtures.Filter($$$"""{"$schema":"http://powerbi.com/product/schema#topN","target":{{{Level("Geo", "Area")}}},"filterType":5,"operator":"Top","itemCount":3,"orderBy":{"table":"Sales","measure":"Total"}}"""));
-        r.Filters.Add(Fixtures.Filter(Advanced("""{"table":"Sales","hierarchy":"Geo","hierarchyLevel":"Month","aggregationFunction":"Count"}""", "And",
+        r.Filters.Add(Fixtures.Filter(Advanced("""{"table":"Sales","hierarchy":"Geo","hierarchyLevel":"Month","aggregationFunction":"CountNonNull"}""", "And",
             """[{"operator":"GreaterThan","value":1}]""")));
         var plan = Build(r);
         var q = plan.BuildQuery();
@@ -269,8 +269,8 @@ public class DaxQueryBuilderTests
         Assert.Contains("VAR _f1 = FILTER(ALL('Sales'[Month Name]), 'Sales'[Month Name] <> \"March\")", q);
         Assert.Contains("VAR _f2 = FILTER(ALL('LocalDateTable_1'[Year]), NOT('LocalDateTable_1'[Year] IN {2023}))", q);
         Assert.Contains("VAR _tn0 = TOPN(3, SUMMARIZECOLUMNS('Sales'[Region], _f0, _f1, _f2, \"tn\", [Total]), [tn], 0)", q);
-        Assert.Contains("\"vf_0\", IGNORE(COUNT('Sales'[Month Name]))", q);
-        Assert.Equal(new[] { "Top 3 'Sales'[Region] by [Total]", "COUNT('Sales'[Month Name]) > 1" }, plan.MeasureFilters);
+        Assert.Contains("\"vf_0\", IGNORE(COUNTA('Sales'[Month Name]))", q);
+        Assert.Equal(new[] { "Top 3 'Sales'[Region] by [Total]", "COUNTA('Sales'[Month Name]) > 1" }, plan.MeasureFilters);
     }
 
     [Fact]
@@ -297,7 +297,7 @@ public class DaxQueryBuilderTests
         // A level always wins over a column sent alongside it.
         var area = LevelField("Geo", "Area");
         area.Column = "Amount";
-        var r = Samples.Request(area, LevelField("geo", "month"), LevelField("Order Date", "Year"), LevelField("Order Date", "Year", "Count"),
+        var r = Samples.Request(area, LevelField("geo", "month"), LevelField("Order Date", "Year"), LevelField("Order Date", "Year", "CountNonNull"),
             Samples.Measure("Sales", "Total"));
         r.Sort.Add(new ExportSort { Table = "Sales", Hierarchy = "Geo", HierarchyLevel = "Month", Direction = "Descending" });
         r.Sort.Add(new ExportSort { Table = "Sales", Hierarchy = "Order Date", HierarchyLevel = "Year" });
@@ -309,12 +309,59 @@ public class DaxQueryBuilderTests
         Assert.Empty(plan.Warnings);
         Assert.Equal(new[] { "Area", "Month", "Year", "Count of Year", "Total" }, plan.Columns.Select(c => c.Header));
         Assert.Contains("SUMMARIZECOLUMNS('Sales'[Region], 'Sales'[Month Name], 'LocalDateTable_1'[Year], 'Sales'[Month Number],", q);
-        Assert.Contains("\"m_0\", COUNT('LocalDateTable_1'[Year])", q);
+        Assert.Contains("\"m_0\", COUNTA('LocalDateTable_1'[Year])", q);
         // Month is ordered by its Sort By Column, like the column itself.
         Assert.Contains("\"s0\", 'Sales'[Month Number]", q);
         Assert.EndsWith("ORDER BY [s0] DESC, [c2] ASC", q);
         // The request itself isn't changed.
         Assert.Equal("Geo", r.Fields[0].Hierarchy);
+    }
+
+    [Fact]
+    public void ImplicitAggregations_AreComputedAndHeadedAsPowerBiDoes()
+    {
+        // Names as getDataFields reports them: "Count" is Count (Distinct), "CountNonNull" is Count.
+        string[] names = { "Sum", "Avg", "Count", "Min", "Max", "CountNonNull", "Median", "StandardDeviation", "Variance" };
+        var r = Samples.Request(new[] { Samples.Column("Sales", "Region") }
+            .Concat(names.Select(n => new ExportField { Table = "Sales", Column = "Amount", Aggregation = n, Role = "Values" }))
+            .Append(new ExportField { Table = "Sales", Column = "Is Online", Aggregation = "CountNonNull", Role = "Values" })
+            .ToArray());
+        var plan = Build(r);
+        var q = plan.BuildQuery();
+
+        Assert.Equal(new[]
+        {
+            "Region", "Sum of Amount", "Average of Amount", "Count of Amount", "Min of Amount", "Max of Amount", "Count of Amount",
+            "Median of Amount", "Standard deviation of Amount", "Variance of Amount", "Count of Is Online"
+        }, plan.Columns.Select(c => c.Header));
+        string[] dax =
+        {
+            "SUM('Sales'[Amount])", "AVERAGE('Sales'[Amount])", "DISTINCTCOUNT('Sales'[Amount])", "MIN('Sales'[Amount])",
+            "MAX('Sales'[Amount])", "COUNTA('Sales'[Amount])", "MEDIAN('Sales'[Amount])", "STDEV.P('Sales'[Amount])",
+            "VAR.P('Sales'[Amount])", "COUNTA('Sales'[Is Online])"
+        };
+        for (var i = 0; i < dax.Length; i++) Assert.Contains($"\"m_{i}\", {dax[i]}", q);
+        // Counts are whole numbers: the column's format string isn't applied to them.
+        Assert.Contains("\"c1\", FORMAT([m_0], \"#,0.00\")", q);
+        Assert.Contains("\"c3\", [m_2]", q);
+        Assert.Contains("\"c6\", [m_5]", q);
+        Assert.Contains("\"c8\", FORMAT([m_7], \"#,0.00\")", q);
+    }
+
+    [Fact]
+    public void UnknownAggregation_FailsTheExport()
+    {
+        var field = Samples.Request(Samples.Column("Sales", "Region"),
+            new ExportField { Table = "Sales", Column = "Amount", Aggregation = "Mode", Role = "Values" });
+        Assert.Equal("The visual aggregates 'Sales'[Amount] with Mode, which the export can't compute. Export aborted.",
+            Assert.Throws<ExportRequestException>(() => Build(field)).Message);
+
+        // A value filter on it would be dropped, over-exporting.
+        var filter = Samples.Request(Samples.Column("Sales", "Region"));
+        filter.Filters.Add(Fixtures.Filter(Advanced("""{"table":"Sales","column":"Amount","aggregationFunction":"Mode"}""", "And",
+            """[{"operator":"GreaterThan","value":1}]""")));
+        Assert.Contains("uses the aggregation Mode, which the export can't compute",
+            Assert.Throws<ExportRequestException>(() => Build(filter)).Message);
     }
 
     [Fact]

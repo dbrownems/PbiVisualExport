@@ -71,10 +71,10 @@ var FALLBACK_ROLES = [
 var QUERY_AGGREGATE_FUNCTIONS = [
   "Sum",
   "Avg",
-  "DistinctCount",
+  "Count",
   "Min",
   "Max",
-  "Count",
+  "CountNonNull",
   "Median",
   "StandardDeviation",
   "Variance"
