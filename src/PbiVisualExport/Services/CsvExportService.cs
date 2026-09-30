@@ -245,7 +245,7 @@ internal sealed class CsvExportService
             q.Connection = await _xmla.OpenAsync(request.WorkspaceName!, request.DatasetName!, identity, ct);
             q.ConnectedAt = sw.Elapsed;
             if (_export.ValidateParameterValues)
-                foreach (var p in plan.Parameters) await ValidateParameterAsync(q.Connection, p, ct);
+                foreach (var p in plan.Parameters.Where(p => !p.SelectAll)) await ValidateParameterAsync(q.Connection, p, ct);
 
             var cmd = q.Command = q.Connection.CreateCommand();
             cmd.CommandText = dax;

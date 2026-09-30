@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using TOM = Microsoft.AnalysisServices.Tabular;
 
 namespace PbiVisualExport.Services;
@@ -23,8 +24,10 @@ internal sealed record TopNFilter(string ColumnRef, long Count, bool Bottom, str
 /// A dynamic M query parameter set from the filters on its bound column
 /// (<c>DEFINE MPARAMETER 'Name' = value</c>), as Power BI does: a scalar, or a list
 /// when the binding allows multiple values. <see cref="Literals"/> are DAX literals.
+/// <see cref="SelectAll"/>: a slicer's "Select all", passing the binding's select-all value
+/// (from the model, not a value of the bound column).
 /// </summary>
-internal sealed record MParameterValue(string Name, string ColumnRef, IReadOnlyList<string> Literals, bool MultiSelect)
+internal sealed record MParameterValue(string Name, string ColumnRef, IReadOnlyList<string> Literals, bool MultiSelect, bool SelectAll = false)
 {
     public string Value => MultiSelect ? "{" + string.Join(", ", Literals) + "}" : Literals[0];
 
@@ -334,7 +337,8 @@ internal sealed class DaxQueryBuilder
 
         var extraGroupBy = GroupByKeyColumns(request, model, dims);
         var warnings = new List<string>(warningsSoFar ?? Array.Empty<string>());
-        var filters = BuildFilters(request.Filters, model, measures, name => UseReportMeasure(name) is not null, warnings);
+        var filters = BuildFilters(request.Filters, model, measures, name => UseReportMeasure(name) is not null, warnings,
+            new ClientTime(request.TimeZone));
 
         List<SortKey> sortKeys;
         string sortDescription;
@@ -538,7 +542,7 @@ internal sealed class DaxQueryBuilder
     /// translate are skipped with a warning; a filter measure that doesn't exist fails the export.
     /// </summary>
     private static FilterSet BuildFilters(IEnumerable<JsonElement> filters, TOM.Model model, List<MeasureField> measures,
-        Func<string, bool> isReportMeasure, List<string> warnings)
+        Func<string, bool> isReportMeasure, List<string> warnings, ClientTime time)
     {
         var set = new FilterSet();
         var bindings = ParameterBindings(model);
@@ -558,15 +562,15 @@ internal sealed class DaxQueryBuilder
             try
             {
                 if (IsTopN(filter)) AddTopN(filter, target, model, isReportMeasure, set, warnings);
-                else if (IsMeasureTarget(target)) AddValueFilter(filter, target, model, measures, isReportMeasure, set, warnings);
+                else if (IsMeasureTarget(target)) AddValueFilter(filter, target, model, measures, isReportMeasure, set, warnings, time);
                 else
                 {
                     // A filter on a dynamic M parameter's bound column also sets the parameter;
                     // Power BI keeps the column filter as well.
                     if (bindings.Count > 0 && Str(target, "table") is { } bt && Str(target, "column") is { } bc &&
                         FindColumn(model, bt, bc) is { } boundColumn && bindings.TryGetValue(boundColumn, out var bound))
-                        foreach (var b in bound) SelectParameterValues(filter, b, selections);
-                    if (TranslateColumnFilter(filter, target, model) is { } arg) set.Columns.Add(arg);
+                        foreach (var b in bound) SelectParameterValues(filter, b, selections, time);
+                    if (TranslateColumnFilter(filter, target, model, time) is { } arg) set.Columns.Add(arg);
                 }
             }
             catch (ExportRequestException) { throw; }
@@ -587,7 +591,7 @@ internal sealed class DaxQueryBuilder
                     $"{b.ColumnRef} is bound to dynamic M query parameter {b.Name}, which takes a single value, but the filters " +
                     $"select {s.Literals.Count} ({string.Join(", ", s.Literals)}). Power BI can't export this selection either: " +
                     "select one value, or allow multi-select on the parameter binding.");
-            set.Parameters.Add(new MParameterValue(b.Name, b.ColumnRef, s.Literals, b.MultiSelect));
+            set.Parameters.Add(new MParameterValue(b.Name, b.ColumnRef, s.Literals, b.MultiSelect, s.SelectAll));
         }
         return set;
     }
@@ -595,10 +599,13 @@ internal sealed class DaxQueryBuilder
     // ---- Dynamic M query parameters ----
 
     /// <summary>An M parameter bound to a model column (the expression's <c>ParameterValuesColumn</c>).</summary>
-    private sealed record ParameterBinding(string Name, string ColumnRef, TOM.DataType DataType, bool MultiSelect);
+    private sealed record ParameterBinding(string Name, string ColumnRef, TOM.DataType DataType, bool MultiSelect, JsonElement? SelectAllValue);
 
-    /// <summary>The values selected so far for a parameter (DAX literals), intersected across its filters.</summary>
-    private sealed record ParameterSelection(ParameterBinding Binding, List<string> Literals);
+    /// <summary>
+    /// The values selected so far for a parameter (DAX literals), intersected across its filters.
+    /// <paramref name="SelectAll"/>: only "Select all" so far (Literals = the binding's select-all value).
+    /// </summary>
+    private sealed record ParameterSelection(ParameterBinding Binding, List<string> Literals, bool SelectAll = false);
 
     private static Dictionary<TOM.Column, List<ParameterBinding>> ParameterBindings(TOM.Model model)
     {
@@ -607,43 +614,63 @@ internal sealed class DaxQueryBuilder
         {
             if (e.ParameterValuesColumn is not { } col) continue;
             if (!map.TryGetValue(col, out var list)) map[col] = list = new();
-            list.Add(new ParameterBinding(e.Name, ColRef(col.Table.Name, col.Name), col.DataType, SupportsMultipleValues(col)));
+            var (multi, selectAll) = ReadParameterMetadata(col);
+            list.Add(new ParameterBinding(e.Name, ColRef(col.Table.Name, col.Name), col.DataType, multi, selectAll));
         }
         return map;
     }
 
     /// <summary>
-    /// A multi-select binding: the bound column's <c>ParameterMetadata</c> extended property (as
-    /// Power BI Desktop writes it) has <c>"supportsMultipleValues": true</c>. The parameter then
-    /// receives a list, even for one value.
+    /// The bound column's <c>ParameterMetadata</c> extended property, as Power BI Desktop writes
+    /// it: <c>"supportsMultipleValues": true</c> makes the binding multi-select (the parameter
+    /// then receives a list, even for one value), and <c>"selectAllValue"</c> is what a slicer's
+    /// "Select all" passes (e.g. <c>"__SelectAll__"</c>).
     /// </summary>
-    private static bool SupportsMultipleValues(TOM.Column column)
+    private static (bool MultiSelect, JsonElement? SelectAllValue) ReadParameterMetadata(TOM.Column column)
     {
         if (column.ExtendedProperties.Find("ParameterMetadata") is not TOM.JsonExtendedProperty p || string.IsNullOrWhiteSpace(p.Value))
-            return false;
+            return (false, null);
         try
         {
             using var doc = JsonDocument.Parse(p.Value);
-            return doc.RootElement.ValueKind == JsonValueKind.Object &&
-                   doc.RootElement.TryGetProperty("supportsMultipleValues", out var v) && v.ValueKind == JsonValueKind.True;
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return (false, null);
+            var multi = root.TryGetProperty("supportsMultipleValues", out var v) && v.ValueKind == JsonValueKind.True;
+            JsonElement? selectAll = root.TryGetProperty("selectAllValue", out var s) &&
+                                     s.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined) ? s.Clone() : null;
+            return (multi, selectAll);
         }
         catch (JsonException)
         {
-            return false;
+            return (false, null);
         }
     }
 
     /// <summary>
     /// Records the values a filter on a bound column selects, as Power BI binds them: In (or
     /// Is conditions) sets the parameter to those values; All or an empty selection leaves its
-    /// default. Anything else (NotIn, comparisons, ...) can't become parameter values; Power BI
-    /// fails to export it too, so it's a 400 rather than an export with the default value.
+    /// default; a slicer's "Select all" (<c>selectAll: true</c>, sent by the client) passes the
+    /// binding's select-all value. Anything else (NotIn, comparisons, ...) can't become
+    /// parameter values; Power BI fails to export it too, so it's a 400 rather than an export
+    /// with the default value.
     /// </summary>
-    private static void SelectParameterValues(JsonElement filter, ParameterBinding b, List<ParameterSelection> selections)
+    private static void SelectParameterValues(JsonElement filter, ParameterBinding b, List<ParameterSelection> selections, ClientTime time)
     {
         ExportRequestException Unsupported(string what) => new(
             $"The filter on {b.ColumnRef} {what}, but the column is bound to dynamic M query parameter {b.Name}, which needs " +
             "the selected values. Power BI can't export this selection either: select values with a slicer or an 'In' filter.");
+
+        var i = selections.FindIndex(s => s.Binding == b);
+        if (filter.TryGetProperty("selectAll", out var sa) && sa.ValueKind == JsonValueKind.True)
+        {
+            if (b.SelectAllValue is not { } value)
+                throw new ExportRequestException(
+                    $"The slicer on {b.ColumnRef} has \"Select all\" selected, but the column's binding to dynamic M query parameter " +
+                    $"{b.Name} has no \"Select all\" value. Enable \"Select all\" on the parameter binding in the model, or select values.");
+            // Other filters on the column narrow "Select all" to their values.
+            if (i < 0) selections.Add(new ParameterSelection(b, new List<string> { DaxLiteral(b.DataType, value, time) }, SelectAll: true));
+            return;
+        }
 
         List<string>? literals = null;
         if (filter.TryGetProperty("values", out var values) && values.ValueKind == JsonValueKind.Array && filter.TryGetProperty("operator", out _))
@@ -651,7 +678,7 @@ internal sealed class DaxQueryBuilder
             var op = Str(filter, "operator") ?? "In";
             if (Eq(op, "All") || values.GetArrayLength() == 0) return;
             if (!Eq(op, "In")) throw Unsupported(Eq(op, "NotIn") ? "excludes values" : $"uses operator '{op}'");
-            literals = values.EnumerateArray().Select(v => DaxLiteral(b.DataType, v)).ToList();
+            literals = values.EnumerateArray().Select(v => DaxLiteral(b.DataType, v, time)).ToList();
         }
         else if (filter.TryGetProperty("conditions", out var conds) && conds.ValueKind == JsonValueKind.Array)
         {
@@ -661,7 +688,7 @@ internal sealed class DaxQueryBuilder
                 var op = Str(c, "operator");
                 if (Eq(op, "None")) continue;
                 if (!Eq(op, "Is") || !c.TryGetProperty("value", out var v)) throw Unsupported($"uses condition '{op}'");
-                var lit = DaxLiteral(b.DataType, v);
+                var lit = DaxLiteral(b.DataType, v, time);
                 if (literals is null) literals = new List<string> { lit };
                 else if (and) literals = literals.Where(l => Eq(l, lit)).ToList();
                 else literals.Add(lit);
@@ -673,8 +700,8 @@ internal sealed class DaxQueryBuilder
         else return;
 
         literals = literals.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-        var i = selections.FindIndex(s => s.Binding == b);
         if (i < 0) selections.Add(new ParameterSelection(b, literals));
+        else if (selections[i].SelectAll) selections[i] = new ParameterSelection(b, literals);
         else selections[i] = selections[i] with { Literals = selections[i].Literals.Where(l => literals.Contains(l, StringComparer.OrdinalIgnoreCase)).ToList() };
     }
 
@@ -744,8 +771,9 @@ internal sealed class DaxQueryBuilder
     /// the visual shows reuses its [m_i] column; any other is a filter-only [vf_i] column.
     /// </summary>
     private static void AddValueFilter(JsonElement filter, JsonElement target, TOM.Model model, List<MeasureField> measures,
-        Func<string, bool> isReportMeasure, FilterSet set, List<string> warnings)
+        Func<string, bool> isReportMeasure, FilterSet set, List<string> warnings, ClientTime time)
     {
+        string Literal(JsonElement v) => MeasureLiteral(v, time);
         if (!HasConditions(filter)) return; // a filter card with nothing set
         var expr = MeasureTargetExpression(target, model, isReportMeasure);
         if (expr is null) { warnings.Add($"Filter on {TargetLabel(target)} is not supported; ignored."); return; }
@@ -760,7 +788,7 @@ internal sealed class DaxQueryBuilder
         foreach (var cond in filter.GetProperty("conditions").EnumerateArray())
         {
             if (Eq(Str(cond, "operator"), "None")) continue;
-            var p = TranslateCondition(cond, colRef, MeasureLiteral);
+            var p = TranslateCondition(cond, colRef, Literal);
             if (p is null)
             {
                 // Dropping one condition would change the rows either way (And: more, Or: fewer).
@@ -768,7 +796,7 @@ internal sealed class DaxQueryBuilder
                 return;
             }
             preds.Add(p);
-            labels.Add(TranslateCondition(cond, expr, MeasureLiteral)!);
+            labels.Add(TranslateCondition(cond, expr, Literal)!);
         }
         if (preds.Count == 0) return;
 
@@ -812,7 +840,7 @@ internal sealed class DaxQueryBuilder
         => e.ValueKind == JsonValueKind.Object && e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String
             ? v.GetString() : null;
 
-    private static string? TranslateColumnFilter(JsonElement filter, JsonElement target, TOM.Model model)
+    private static string? TranslateColumnFilter(JsonElement filter, JsonElement target, TOM.Model model, ClientTime time)
     {
         if (!target.TryGetProperty("table", out var tEl) || !target.TryGetProperty("column", out var cEl))
             return null; // only column targets supported (skip hierarchy filters)
@@ -833,7 +861,7 @@ internal sealed class DaxQueryBuilder
             var op = filter.TryGetProperty("operator", out var opEl) ? opEl.GetString() ?? "In" : "In";
             if (!filter.TryGetProperty("values", out var valuesEl) || valuesEl.ValueKind != JsonValueKind.Array)
                 return null;
-            var literals = valuesEl.EnumerateArray().Select(v => DaxLiteral(dataType, v)).ToList();
+            var literals = valuesEl.EnumerateArray().Select(v => DaxLiteral(dataType, v, time)).ToList();
             if (literals.Count == 0) return null;
             var set = "{" + string.Join(", ", literals) + "}";
             return op.Equals("NotIn", StringComparison.OrdinalIgnoreCase)
@@ -852,7 +880,7 @@ internal sealed class DaxQueryBuilder
             var preds = new List<string>();
             foreach (var cond in condsEl.EnumerateArray())
             {
-                var p = TranslateCondition(cond, colRef, v => DaxLiteral(dataType, v));
+                var p = TranslateCondition(cond, colRef, v => DaxLiteral(dataType, v, time));
                 if (p is not null) preds.Add(p);
             }
             if (preds.Count == 0) return null;
@@ -891,7 +919,7 @@ internal sealed class DaxQueryBuilder
     // ---- Literal + identifier encoding ----
 
     /// <summary>A literal compared with a measure value (measure data types aren't in the metadata).</summary>
-    private static string MeasureLiteral(JsonElement value)
+    private static string MeasureLiteral(JsonElement value, ClientTime time)
     {
         switch (value.ValueKind)
         {
@@ -905,13 +933,13 @@ internal sealed class DaxQueryBuilder
                 if (decimal.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out var n))
                     return n.ToString(CultureInfo.InvariantCulture);
                 if (s.Length >= 10 && char.IsDigit(s[0]) && s[4] == '-' && s[7] == '-')
-                    return DaxLiteral(TOM.DataType.DateTime, value);
+                    return DaxLiteral(TOM.DataType.DateTime, value, time);
                 return QuoteString(s);
             default: return QuoteString(value.ToString());
         }
     }
 
-    private static string DaxLiteral(TOM.DataType dataType, JsonElement value)
+    private static string DaxLiteral(TOM.DataType dataType, JsonElement value, ClientTime time)
     {
         if (value.ValueKind == JsonValueKind.Null) return "BLANK()";
 
@@ -933,7 +961,7 @@ internal sealed class DaxQueryBuilder
 
             case TOM.DataType.DateTime:
                 var raw = value.ValueKind == JsonValueKind.String ? value.GetString() : value.GetRawText();
-                if (DateTime.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var dt))
+                if (time.TryParse(raw, out var dt))
                 {
                     var datePart = $"DATE({dt.Year}, {dt.Month}, {dt.Day})";
                     if (dt.TimeOfDay == TimeSpan.Zero) return datePart;
@@ -976,4 +1004,53 @@ internal sealed class DaxQueryBuilder
 
 internal sealed record DimField(string Header, string ColumnRef, string? FormatString, TOM.DataType DataType, ExportField? Source);
 internal sealed record MeasureField(string Header, string Expression, string? FormatString, ExportField? Source);
+
+/// <summary>
+/// Reads the date-time values in filters as the report does. The Power BI JS SDK serializes
+/// them with <c>Date.toISOString()</c>: the browser's local wall time as a UTC instant
+/// (local 2024-02-01 00:00 at UTC-6 is <c>"2024-02-01T06:00:00.000Z"</c>), and the report
+/// engine filters on the local wall time. A value with an offset (or <c>Z</c>) is converted
+/// to the wall time in the browser's time zone (<see cref="VisualExportRequest.TimeZone"/>);
+/// without one, the wall time as written is used. Values without an offset are wall times.
+/// </summary>
+internal sealed class ClientTime(string? timeZoneId)
+{
+    private static readonly Regex HasOffset = new(@"(?:T|\s)\d{1,2}:\d{2}.*(?:Z|[+-]\d{2}:?\d{2})$",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private TimeZoneInfo? zone;
+
+    public bool TryParse(string? raw, out DateTime wallTime)
+    {
+        wallTime = default;
+        if (string.IsNullOrWhiteSpace(raw)) return false;
+        raw = raw.Trim();
+        if (HasOffset.IsMatch(raw) &&
+            DateTimeOffset.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.None, out var instant))
+        {
+            wallTime = Zone is { } z ? TimeZoneInfo.ConvertTime(instant, z).DateTime : instant.DateTime;
+            return true;
+        }
+        return DateTime.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.None, out wallTime);
+    }
+
+    // Resolved on first use, so an unknown zone only fails exports that filter on a date.
+    private TimeZoneInfo? Zone
+    {
+        get
+        {
+            if (zone is not null || string.IsNullOrWhiteSpace(timeZoneId)) return zone;
+            try
+            {
+                // IANA ids ("America/Chicago") resolve on every platform (ICU on Windows).
+                return zone = TimeZoneInfo.FindSystemTimeZoneById(timeZoneId.Trim());
+            }
+            catch (Exception ex) when (ex is TimeZoneNotFoundException or InvalidTimeZoneException)
+            {
+                throw new ExportRequestException(
+                    $"Unknown time zone '{timeZoneId}': the date filters can't be converted to the report's local time.");
+            }
+        }
+    }
+}
 

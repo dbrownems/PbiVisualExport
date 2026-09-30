@@ -65,6 +65,8 @@ describe("buildRequest", () => {
         assert.equal(req.applyFormatStrings, true);
         assert.equal(req.applySort, false);
         assert.deepEqual(req.sort, []);
+        assert.equal(req.timeZone, Intl.DateTimeFormat().resolvedOptions().timeZone);
+        assert.match(req.timeZone, /\S/);
     });
 
     test("explicit IDs win over the embed URL; unformatted", async () => {
@@ -136,6 +138,40 @@ describe("slicers", () => {
         const visual = mockVisual();
         const slicer = mockVisual({ name: "s1", type: "slicer", getSlicerState: serializationFailed });
         const { exporter } = setup({ visual, pageVisuals: [visual, slicer] });
+        await rejectsWith(exporter.buildRequest(visual), "slicerUnreadable");
+    });
+
+    // The bookmark filter of a slicer after clicking "Select all", as captured from Power BI.
+    const anyValue = (table, column, source) => ({
+        Version: 2,
+        From: [{ Name: "c", Entity: table, Type: 0 }],
+        Where: [{ Condition: { Comparison: { ComparisonKind: 0, Left: { Column: { Expression: { SourceRef: source ? { Source: "c" } : { Entity: table } }, Property: column } }, Right: { AnyValue: {} } } } }],
+    });
+
+    test("unreadable slicer in the \"Select all\" state is sent as a selectAll filter", async () => {
+        for (const bySource of [true, false]) {
+            const visual = mockVisual();
+            const slicer = mockVisual({ name: "s1", type: "slicer", getSlicerState: serializationFailed });
+            const general = [{ properties: { filter: { filter: anyValue("CategoryPicker", "CategoryChoice", bySource) } } }];
+            const bookmarkState = await gzipBookmark(bookmarkWith("p1", { s1: { singleVisual: { objects: { merge: { general } } } } }));
+            const { exporter } = setup({ visual, pageVisuals: [visual, slicer], reportOpts: { bookmarkState } });
+            const req = await exporter.buildRequest(visual);
+            assert.deepEqual(req.filters, [{
+                $schema: "http://powerbi.com/product/schema#basic",
+                target: { table: "CategoryPicker", column: "CategoryChoice" },
+                filterType: 1, operator: "All", values: [], requireSingleSelection: false, selectAll: true,
+            }]);
+        }
+    });
+
+    test("an AnyValue comparison mixed with another condition still aborts the export", async () => {
+        const visual = mockVisual();
+        const slicer = mockVisual({ name: "s1", type: "slicer", getSlicerState: serializationFailed });
+        const filter = anyValue("CategoryPicker", "CategoryChoice", true);
+        filter.Where.push({ Condition: { In: { Expressions: [], Values: [] } } });
+        const general = [{ properties: { filter: { filter } } }];
+        const bookmarkState = await gzipBookmark(bookmarkWith("p1", { s1: { singleVisual: { objects: { merge: { general } } } } }));
+        const { exporter } = setup({ visual, pageVisuals: [visual, slicer], reportOpts: { bookmarkState } });
         await rejectsWith(exporter.buildRequest(visual), "slicerUnreadable");
     });
 

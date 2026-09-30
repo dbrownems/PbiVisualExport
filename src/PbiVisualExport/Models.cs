@@ -118,6 +118,14 @@ public sealed class VisualExportRequest
     /// </summary>
     public bool ApplySort { get; set; } = true;
 
+    /// <summary>
+    /// The browser's IANA time zone (e.g. <c>America/Chicago</c>). The Power BI JS SDK sends
+    /// date filter values as UTC instants of the browser's local wall time, which the report
+    /// filters on; the server converts them back with this zone. Optional (additive): without
+    /// it, such values are read as UTC.
+    /// </summary>
+    public string? TimeZone { get; set; }
+
     /// <summary>A shallow copy with <paramref name="sort"/> as its sort.</summary>
     internal VisualExportRequest WithSort(List<ExportSort> sort)
     {

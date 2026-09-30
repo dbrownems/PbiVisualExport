@@ -101,8 +101,9 @@ public sealed class ExportOptions
     /// (<c>MPARAMETER</c>), which the model's M passes to the source (e.g. into a native SQL
     /// query). When true (default), each value must exist in the bound column, checked with a
     /// small DAX query before the export (400 otherwise), so a caller can't pass arbitrary text
-    /// into the source query. Power BI itself passes unknown values through (usually giving an
-    /// empty result); set false to match that.
+    /// into the source query. A slicer's "Select all" passes the binding's select-all value,
+    /// which comes from the model, so it isn't checked. Power BI itself passes unknown values
+    /// through (usually giving an empty result); set false to match that.
     /// </summary>
     public bool ValidateParameterValues { get; set; } = true;
 

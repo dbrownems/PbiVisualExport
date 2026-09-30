@@ -202,6 +202,10 @@ var PbiVisualExport = (() => {
         const title = v.title && v.title.trim() ? v.title : v.name;
         const fallback = await slicerStateFromBookmark(report, page, v);
         if (fallback === "no-filter") continue;
+        if (Array.isArray(fallback)) {
+          pushAll(fallback);
+          continue;
+        }
         throw new PbiExportError(
           "slicerUnreadable",
           `Couldn't read slicer “${title}” (${errorText(lastErr)}` + (fallback ? "; the bookmark shows a selection the API can't translate yet" : "") + "). Export aborted rather than ignoring its selection.",
@@ -217,10 +221,37 @@ var PbiVisualExport = (() => {
       const vc = (await captureVisualContainers(report, page))[slicer.name];
       if (!vc || !vc.singleVisual) return null;
       const general = vc.singleVisual.objects?.merge?.general || [];
-      return general.some((g) => g && g.properties && g.properties.filter) ? "filter" : "no-filter";
+      const filters = general.map((g) => g?.properties?.filter).filter((f) => f);
+      if (filters.length === 0) return "no-filter";
+      const selectAll = filters.map((f) => selectAllFilters(f.filter));
+      return selectAll.every((f) => f) ? selectAll.flat() : "filter";
     } catch {
       return null;
     }
+  }
+  function selectAllFilters(query) {
+    const from = {};
+    for (const f of query?.From || []) if (f && f.Name && f.Entity) from[f.Name] = f.Entity;
+    const where = query?.Where;
+    if (!Array.isArray(where) || where.length === 0) return null;
+    const out = [];
+    for (const w of where) {
+      const cmp = w?.Condition?.Comparison;
+      const col = cmp?.Left?.Column;
+      const ref = col?.Expression?.SourceRef;
+      const table = ref?.Entity || from[ref?.Source];
+      if (!cmp || cmp.ComparisonKind !== 0 || !cmp.Right || !("AnyValue" in cmp.Right) || !table || !col.Property) return null;
+      out.push({
+        $schema: "http://powerbi.com/product/schema#basic",
+        target: { table, column: col.Property },
+        filterType: 1,
+        operator: "All",
+        values: [],
+        requireSingleSelection: false,
+        selectAll: true
+      });
+    }
+    return out;
   }
   async function captureVisualContainers(report, page) {
     const bookmark = await report.bookmarksManager.capture({ allPages: true });
@@ -266,6 +297,13 @@ var PbiVisualExport = (() => {
   }
   function visualTitle(visual, page) {
     return visual.title && visual.title.trim() ? visual.title.trim() : page.displayName;
+  }
+  function browserTimeZone() {
+    try {
+      return Intl.DateTimeFormat().resolvedOptions().timeZone || void 0;
+    } catch {
+      return void 0;
+    }
   }
   function suggestedFileName(title, now = /* @__PURE__ */ new Date()) {
     const p = (n) => String(n).padStart(2, "0");
@@ -581,6 +619,7 @@ var PbiVisualExport = (() => {
       throwIfAborted(options.signal);
       const applySort = options.sort === true;
       const sortInfo = applySort ? await gatherSort(this.report, page, visual) : { sort: [], source: "not read (sort off)" };
+      const timeZone = browserTimeZone();
       return {
         workspaceId,
         reportId,
@@ -593,6 +632,7 @@ var PbiVisualExport = (() => {
         applyFormatStrings: options.formatted !== false,
         applySort,
         sort: sortInfo.sort,
+        ...timeZone ? { timeZone } : {},
         sortSource: sortInfo.source
       };
     }

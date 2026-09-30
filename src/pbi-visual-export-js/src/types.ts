@@ -86,6 +86,11 @@ export interface VisualExportRequest {
     applyFormatStrings: boolean;
     applySort: boolean;
     sort: ExportSort[];
+    /**
+     * The browser's IANA time zone. The SDK reports date filter values as UTC instants of
+     * the browser's local wall time; the server converts them back with this zone.
+     */
+    timeZone?: string;
     /** Diagnostic only (ignored by the server): where the sort came from. */
     sortSource: string;
 }

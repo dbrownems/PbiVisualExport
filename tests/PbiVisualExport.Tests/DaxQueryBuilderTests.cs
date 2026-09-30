@@ -274,6 +274,55 @@ public class DaxQueryBuilderTests
         Assert.Contains("Filter measure [Nope] was not found", ex.Message);
     }
 
+    // ---- Dates: the SDK sends the browser's local wall time as a UTC instant ----
+
+    [Fact]
+    public void DateFilterValues_AreReadInTheBrowsersTimeZone()
+    {
+        var r = Samples.Request(Samples.Column("Sales", "Region"), Samples.Measure("Sales", "Total"));
+        r.TimeZone = "America/Chicago";
+        // Local midnight in winter (UTC-6) and summer (UTC-5); a wall time without an offset.
+        r.Filters.Add(Fixtures.Filter(Basic("Order Date", "In", """["2024-02-01T06:00:00.000Z", "2024-07-01T05:00:00.000Z", "2024-03-01T00:00:00"]""")));
+        r.Filters.Add(Fixtures.Filter(Advanced("""{"table":"Sales","column":"Order Date"}""", "And",
+            """[{"operator":"GreaterThanOrEqual","value":"2024-01-02T09:04:05.000Z"},{"operator":"LessThan","value":"2024-12-31T12:00:00+01:00"}]""")));
+        r.Filters.Add(Fixtures.Filter(Advanced("""{"table":"Sales","measure":"Total"}""", "And", """[{"operator":"GreaterThan","value":"2024-03-10T06:00:00.000Z"}]""")));
+        // A text column keeps its values as sent, even if they look like dates.
+        r.Filters.Add(Fixtures.Filter(Basic("Region", "In", """["2024-02-01T06:00:00.000Z"]""")));
+        var q = Build(r).BuildQuery();
+
+        Assert.Contains("VAR _f0 = TREATAS({DATE(2024, 2, 1), DATE(2024, 7, 1), DATE(2024, 3, 1)}, 'Sales'[Order Date])", q);
+        Assert.Contains("VAR _f1 = FILTER(ALL('Sales'[Order Date]), 'Sales'[Order Date] >= (DATE(2024, 1, 2) + TIME(3, 4, 5)) && 'Sales'[Order Date] < (DATE(2024, 12, 31) + TIME(5, 0, 0)))", q);
+        Assert.Contains("VAR _f2 = TREATAS({\"2024-02-01T06:00:00.000Z\"}, 'Sales'[Region])", q);
+        Assert.Contains("[m_0] > DATE(2024, 3, 10)", q);
+    }
+
+    [Theory]
+    [InlineData("Asia/Kolkata", "2024-01-31T18:30:00.000Z", "DATE(2024, 2, 1)")]
+    [InlineData("Europe/Berlin", "2024-01-31T23:00:00.000Z", "DATE(2024, 2, 1)")]
+    [InlineData("UTC", "2024-02-01T06:00:00.000Z", "(DATE(2024, 2, 1) + TIME(6, 0, 0))")]
+    [InlineData(null, "2024-02-01T06:00:00.000Z", "(DATE(2024, 2, 1) + TIME(6, 0, 0))")]
+    public void DateFilterValues_WithoutOrWithOtherTimeZones(string? zone, string value, string literal)
+    {
+        var r = Samples.Request(Samples.Column("Sales", "Region"));
+        r.TimeZone = zone;
+        r.Filters.Add(Fixtures.Filter(Basic("Order Date", "In", $"[\"{value}\"]")));
+        Assert.Contains($"TREATAS({{{literal}}}, 'Sales'[Order Date])", Build(r).BuildQuery());
+    }
+
+    [Fact]
+    public void UnknownTimeZone_FailsOnlyWhenADateNeedsIt()
+    {
+        var r = Samples.Request(Samples.Column("Sales", "Region"));
+        r.TimeZone = "Not/AZone";
+        r.Filters.Add(Fixtures.Filter(Basic("Region", "In", """["East"]""")));
+        r.Filters.Add(Fixtures.Filter(Basic("Order Date", "In", """["2024-03-01T00:00:00"]""")));
+        Assert.Contains("DATE(2024, 3, 1)", Build(r).BuildQuery());
+
+        r.Filters.Add(Fixtures.Filter(Basic("Order Date", "In", """["2024-02-01T06:00:00.000Z"]""")));
+        var ex = Assert.Throws<ExportRequestException>(() => Build(r));
+        Assert.Contains("Unknown time zone 'Not/AZone'", ex.Message);
+    }
+
     // ---- Dynamic M query parameters (DqParamTest: RegionParam single-select, CategoryParam multi-select) ----
 
     private static readonly Lazy<Microsoft.AnalysisServices.Tabular.Model> DqModel = new(() => Fixtures.Model("DqParamTest"));
@@ -327,6 +376,55 @@ public class DaxQueryBuilderTests
         var plan = BuildDq(Region("All", "[]"), Category("In", "[]"), Category("NotIn", "[]"), CategoryConditions("And", "[]"));
         Assert.Empty(plan.Parameters);
         Assert.DoesNotContain("MPARAMETER", plan.BuildQuery());
+    }
+
+    private static string SelectAll(string table, string column) =>
+        $$"""{"$schema":"http://powerbi.com/product/schema#basic","target":{"table":"{{table}}","column":"{{column}}"},"filterType":1,"operator":"All","values":[],"requireSingleSelection":false,"selectAll":true}""";
+
+    [Fact]
+    public void SelectAll_PassesTheBindingsSelectAllValue()
+    {
+        // As traced from Power BI after clicking "Select all" on the multi-select slicer.
+        var plan = BuildDq(SelectAll("CategoryPicker", "CategoryChoice"));
+        var q = plan.BuildQuery();
+        Assert.Equal("CategoryParam = {\"__SelectAll__\"}", Assert.Single(plan.Parameters).ToString());
+        Assert.True(plan.Parameters[0].SelectAll); // not checked against the column's values
+        Assert.StartsWith("DEFINE\n  MPARAMETER 'CategoryParam' = {\"__SelectAll__\"}\n", q);
+        Assert.DoesNotContain("TREATAS", q);
+
+        // Another filter on the column narrows "Select all", in either order.
+        var narrowed = BuildDq(SelectAll("CategoryPicker", "CategoryChoice"), Category("In", """["Bikes"]"""));
+        Assert.Equal("CategoryParam = {\"Bikes\"}", Assert.Single(narrowed.Parameters).ToString());
+        Assert.False(narrowed.Parameters[0].SelectAll);
+        Assert.Equal("CategoryParam = {\"Bikes\"}", Assert.Single(BuildDq(Category("In", """["Bikes"]"""), SelectAll("CategoryPicker", "CategoryChoice")).Parameters).ToString());
+
+        // On a column no parameter is bound to, "Select all" is no filter at all.
+        var plain = BuildDq(SelectAll("Sales", "Category"));
+        Assert.Empty(plain.Parameters);
+        Assert.DoesNotContain("TREATAS", plain.BuildQuery());
+    }
+
+    [Fact]
+    public void SelectAll_WithoutASelectAllValueOnTheBinding_FailsTheExport()
+    {
+        var ex = Assert.Throws<ExportRequestException>(() => BuildDq(SelectAll("RegionPicker", "RegionChoice")));
+        Assert.Contains("has no \"Select all\" value", ex.Message);
+    }
+
+    [Fact]
+    public void DateAndDateTimeParameters_TakeTheBrowsersWallTime()
+    {
+        // As traced from Power BI at UTC-6: the slicer's local 2024-02-01 00:00 arrives as 06:00Z
+        // and Power BI sends MPARAMETER 'FromDateParam' = DATE(2024, 2, 1).
+        var r = Samples.Request(Samples.Column("Sales", "Product"), Samples.Measure("Sales", "Total Amount"));
+        r.TimeZone = "America/Chicago";
+        r.Filters.Add(Fixtures.Filter("""{"$schema":"http://powerbi.com/product/schema#basic","target":{"table":"DatePicker","column":"FromDate"},"filterType":1,"operator":"In","values":["2024-02-01T06:00:00.000Z"],"requireSingleSelection":true}"""));
+        r.Filters.Add(Fixtures.Filter("""{"$schema":"http://powerbi.com/product/schema#basic","target":{"table":"DateTimePicker","column":"ToDateTime"},"filterType":1,"operator":"In","values":["2024-04-04T05:00:01.000Z"],"requireSingleSelection":true}"""));
+        var plan = new DaxQueryBuilder().Build(r, DqModel.Value);
+
+        Assert.Equal(new[] { "FromDateParam = DATE(2024, 2, 1)", "ToDateTimeParam = (DATE(2024, 4, 4) + TIME(0, 0, 1))" },
+            plan.Parameters.Select(p => p.ToString()));
+        Assert.Contains("TREATAS({DATE(2024, 2, 1)}, 'DatePicker'[FromDate])", plan.BuildQuery());
     }
 
     [Theory]

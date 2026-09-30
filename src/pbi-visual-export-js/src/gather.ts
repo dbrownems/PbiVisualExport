@@ -107,12 +107,13 @@ export async function gatherFilters(report: PbiReport, page: PbiPage, visual: Pb
         }
         if (!state) {
             // The SDK's slicer serializer throws on some slicers (one with no saved selection
-            // throws "reading 'general'"; select-all slicers have been reported to throw
+            // throws "reading 'general'"; one in the "Select all" state throws
             // slicerSerializationFailed). The bookmark holds the same state as a
             // semantic-query filter: no filter there = no selection.
             const title = v.title && v.title.trim() ? v.title : v.name;
             const fallback = await slicerStateFromBookmark(report, page, v);
             if (fallback === "no-filter") continue;
+            if (Array.isArray(fallback)) { pushAll(fallback); continue; }
             throw new PbiExportError("slicerUnreadable",
                 `Couldn't read slicer \u201c${title}\u201d (${errorText(lastErr)}` +
                 (fallback ? "; the bookmark shows a selection the API can't translate yet" : "") +
@@ -123,17 +124,52 @@ export async function gatherFilters(report: PbiReport, page: PbiPage, visual: Pb
     return all;
 }
 
-// "no-filter" if the bookmark shows the slicer has no selection, "filter" if it has one,
-// null if it can't be determined.
-async function slicerStateFromBookmark(report: PbiReport, page: PbiPage, slicer: PbiVisual): Promise<"filter" | "no-filter" | null> {
+// "no-filter" if the bookmark shows the slicer has no selection, the equivalent filters if
+// it's in the "Select all" state, "filter" if it has another selection, null if it can't be
+// determined.
+async function slicerStateFromBookmark(report: PbiReport, page: PbiPage, slicer: PbiVisual): Promise<PbiFilter[] | "filter" | "no-filter" | null> {
     try {
         const vc = (await captureVisualContainers(report, page))[slicer.name];
         if (!vc || !vc.singleVisual) return null;
         const general = vc.singleVisual.objects?.merge?.general || [];
-        return general.some((g: any) => g && g.properties && g.properties.filter) ? "filter" : "no-filter";
+        const filters = general.map((g: any) => g?.properties?.filter).filter((f: any) => f);
+        if (filters.length === 0) return "no-filter";
+        const selectAll = filters.map((f: any) => selectAllFilters(f.filter));
+        return selectAll.every((f: PbiFilter[] | null) => f) ? selectAll.flat() as PbiFilter[] : "filter";
     } catch {
         return null;
     }
+}
+
+/**
+ * A slicer's "Select all" state as the bookmark stores it: every condition is
+ * `column = AnyValue`. Sent as a basic "All" filter with `selectAll: true`, so the server
+ * can pass a dynamic M parameter bound to the column its "Select all" value; on any other
+ * column it selects everything, like an empty filter. Null for any other filter.
+ */
+function selectAllFilters(query: any): PbiFilter[] | null {
+    const from: Record<string, string> = {};
+    for (const f of query?.From || []) if (f && f.Name && f.Entity) from[f.Name] = f.Entity;
+    const where = query?.Where;
+    if (!Array.isArray(where) || where.length === 0) return null;
+    const out: PbiFilter[] = [];
+    for (const w of where) {
+        const cmp = w?.Condition?.Comparison;
+        const col = cmp?.Left?.Column;
+        const ref = col?.Expression?.SourceRef;
+        const table = ref?.Entity || from[ref?.Source];
+        if (!cmp || cmp.ComparisonKind !== 0 || !cmp.Right || !("AnyValue" in cmp.Right) || !table || !col.Property) return null;
+        out.push({
+            $schema: "http://powerbi.com/product/schema#basic",
+            target: { table, column: col.Property },
+            filterType: 1,
+            operator: "All",
+            values: [],
+            requireSingleSelection: false,
+            selectAll: true,
+        });
+    }
+    return out;
 }
 
 async function captureVisualContainers(report: PbiReport, page: PbiPage): Promise<Record<string, any>> {
@@ -192,6 +228,18 @@ export async function gatherSort(report: PbiReport, page: PbiPage, visual: PbiVi
 /** The title used for file names: the visual's title, else its page's display name. */
 export function visualTitle(visual: PbiVisual, page: PbiPage): string {
     return visual.title && visual.title.trim() ? visual.title.trim() : page.displayName;
+}
+
+/**
+ * The browser's IANA time zone, which the report (in an iframe of this browser) uses to
+ * read the date filter values the SDK reports as UTC instants. Undefined if unavailable.
+ */
+export function browserTimeZone(): string | undefined {
+    try {
+        return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
+    } catch {
+        return undefined;
+    }
 }
 
 /** `{title}-{yyyyMMdd-HHmmss}.csv` (local time), with characters invalid in file names replaced. */

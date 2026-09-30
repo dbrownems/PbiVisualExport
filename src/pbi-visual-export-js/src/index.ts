@@ -5,7 +5,7 @@
 //   button.onclick = () => exporter.exportVisual(visual, { onProgress: p => status.textContent = p.message });
 //   exporter.addVisualMenuCommand();   // "Export all data (CSV)" in every visual's "More options" menu
 import { PbiExportError, errorText, isAbort, throwIfAborted } from "./errors";
-import { SKIP_VISUAL_TYPES, gatherFields, gatherFilters, gatherSort, suggestedFileName, visualTitle } from "./gather";
+import { SKIP_VISUAL_TYPES, browserTimeZone, gatherFields, gatherFilters, gatherSort, suggestedFileName, visualTitle } from "./gather";
 import { ApiClient, readJson } from "./http";
 import { canPickFile, discardFile, downloadViaTicket, pickSaveFile, saveToFile } from "./transfer";
 import type {
@@ -102,6 +102,7 @@ export class Exporter {
         throwIfAborted(options.signal);
         const applySort = options.sort === true;
         const sortInfo = applySort ? await gatherSort(this.report, page, visual) : { sort: [], source: "not read (sort off)" };
+        const timeZone = browserTimeZone();
         return {
             workspaceId, reportId,
             ...(datasetId ? { datasetId } : {}),
@@ -113,6 +114,7 @@ export class Exporter {
             applyFormatStrings: options.formatted !== false,
             applySort,
             sort: sortInfo.sort,
+            ...(timeZone ? { timeZone } : {}),
             sortSource: sortInfo.source,
         };
     }
