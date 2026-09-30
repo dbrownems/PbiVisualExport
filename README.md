@@ -306,6 +306,11 @@ and rejects any ID or name the client sends that disagrees with it.
 }
 ```
 
+An `aggregation` uses the names the SDK's `getDataFields` returns: `Sum`, `Avg`, `Min`,
+`Max`, `Median`, `StandardDeviation`, `Variance`, `CountNonNull` (Count) and `Count`,
+which is **Count (Distinct)**. A hierarchy level is sent as `{ "table", "hierarchy",
+"hierarchyLevel" }` in place of `column`.
+
 Errors are JSON `{ error, problems? }`:
 
 | Status | Meaning |
@@ -328,6 +333,12 @@ silently truncated file.
   visual ("Hide fields on the visual") is computed, because it affects which rows
   appear, but it isn't written. This matches native export. Model-hidden columns are
   exported, because the visual displays them.
+- **Hierarchy levels** placed on a visual are exported as the level's column, headed by
+  the level name, as native export does.
+- **Implicit aggregations** are computed and headed as Power BI does: Sum, Average,
+  Min, Max, Median, Count (`COUNTA`), Count (Distinct) (`DISTINCTCOUNT`, which counts a
+  blank as a value), and the population forms of Standard deviation (`STDEV.P`) and
+  Variance (`VAR.P`). An aggregation the export can't compute stops the export.
 - **Report-level measures** (defined in the report, not the model) are read from the
   report's `reportExtensions.json` and added with `DEFINE MEASURE`. This needs a PBIR
   (enhanced format) report.
@@ -336,6 +347,9 @@ silently truncated file.
   - Top N
   - measure value filters, evaluated at the visual's grain, as Power BI does
   - slicer selections, including "select all" with exclusions
+  - hierarchy slicers (including inverted and mixed-depth selections), tuple filters,
+    and filters on a hierarchy level; a multi-column filter that can't be translated
+    stops the export
   - filter-pane cards the SDK can't serialize (a card in the "Select all" state makes
     `getFilters()` fail for its whole level): read from the report's bookmark state
     instead; a card that can't be translated from there stops the export
@@ -364,12 +378,11 @@ silently truncated file.
 
 | Gap | Effect |
 |---|---|
-| Hierarchy slicers and hierarchy-level filter targets (`filterType` 9), tuple filters (6), relative date/time filters, Top N by a hierarchy level | Skipped with a warning, so the export can include rows the visual excludes. |
+| Relative date and relative time filters (`filterType` 4 and 7) | Not translated, so the export can include rows the visual excludes. |
 | Cross-filtering or highlighting from a selection in another visual | Not captured. The client reads filters and slicer state only. |
-| Hierarchy-level sort keys | Skipped by the client. |
 | Filters on a column bound to a dynamic M query parameter | `NotIn` and comparison filters, and several values for a single-value parameter, are rejected (400); Power BI can't export these selections either. "Select all" on a binding without a `selectAllValue` is rejected (400). A parameter-bound slicer has no "all except" state: unchecking a value after "Select all" clears the selection. |
-| Median, StdDev and Variance implicit aggregations | Computed as `SUM`. |
 | No explicit sort | Power BI's implicit order is approximated: group-by columns ascending. |
+| Ties in an explicit sort | Rows with equal sort keys can come out in a different order. Power BI breaks ties by the remaining group-by columns, ascending. |
 | Field-parameter visuals | Headers use the column name, not the parameter's label. |
 | PBIR-Legacy reports | Refused under `Strict`; report measures need PBIR. Use `PbirOnly`, or convert the report. |
 | Warnings from the Save As (`POST csv`) path | Not returned. The `prepare` (download) path returns them. |

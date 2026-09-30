@@ -139,12 +139,15 @@ Failures reject with a `PbiExportError`, which has a `code`:
 
 - **Fields**: `getCapabilities` → `getDataFields(role)`, in visual order. Fields hidden
   on the visual are sent with `hidden: true`: the server computes them but doesn't
-  write them.
+  write them. Hierarchy levels are sent as `{ table, hierarchy, hierarchyLevel }`.
+  Implicit aggregations keep the SDK's names: `Count` is **Count (Distinct)**, and
+  `CountNonNull` is Count.
 - **Filters**: report, page and visual filters, plus the page's slicer selections. If a
   slicer isn't rendered yet, the client activates its page. If the SDK can't serialize
   a slicer, or a level's filters (a filter-pane card in the "Select all" state makes
   `getFilters()` fail for its whole level), the client falls back to the bookmark
-  state. It translates `In` / `NotIn` value lists and "Select all" from there, and
+  state. It translates `In` / `NotIn` value lists (including multi-column exclusions
+  from hierarchy slicers) and "Select all" from there, and
   stops on anything else. "Select all" is sent as an `All` filter marked
   `selectAll: true`, so the server can set a bound dynamic M parameter to its
   select-all value.

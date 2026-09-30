@@ -311,7 +311,8 @@ _sample/                                   upstream MS "Embed for your customers
       `report.bookmarksManager.capture({allPages:true})` (`state` = base64 gzip JSON
       → `explorationState.sections[page].visualContainers[visual].singleVisual.orderBy[]`).
       That array holds the live sort **and** the saved PBIR `sortDefinition`; absent =
-      no explicit sort. Hierarchy-level keys are skipped.
+      no explicit sort. Hierarchy-level keys (`HierarchyLevel` expressions) are sent
+      as `{ table, hierarchy, hierarchyLevel }`.
     - `formatted` (default true) → `applyFormatStrings`; `sort` (default **false**) →
       `applySort`.
   - `exportVisual(visual, { target })` transfers the file without buffering it:
@@ -407,6 +408,34 @@ _sample/                                   upstream MS "Embed for your customers
     exports also stream the hidden raw `[sN]` keys, roughly doubling the wire width.)
   - Model **format strings** applied with DAX `FORMAT(...)` only when the column/
     measure **has** one and `applyFormatStrings` is true (strings pass through).
+  - **Implicit aggregations** (`Services/ImplicitAggregations.cs`, the single table
+    used by the builder, the validator, headers and — mirrored — the JS client). Names
+    are the SDK's `QueryAggregateFunction` names, as `getDataFields` and filter
+    targets report them; the PBIR `Aggregation.Function` code maps to the same names:
+
+    | Code | SDK name | Power BI label | DAX |
+    |---:|---|---|---|
+    | 0 | `Sum` | Sum | `SUM` |
+    | 1 | `Avg` | Average | `AVERAGE` |
+    | 2 | **`Count`** | **Count (Distinct)** | `DISTINCTCOUNT` (counts BLANK as a value, as native does) |
+    | 3 | `Min` | Minimum | `MIN` |
+    | 4 | `Max` | Maximum | `MAX` |
+    | 5 | **`CountNonNull`** | **Count** | `COUNTA` (works on Boolean columns; `COUNT` doesn't) |
+    | 6 | `Median` | Median | `MEDIAN` |
+    | 7 | `StandardDeviation` | Standard deviation | `STDEV.P` (population) |
+    | 8 | `Variance` | Variance | `VAR.P` (population) |
+
+    `DistinctCount` is also accepted in requests. Headers match native: "Sum of X",
+    "Average of X", "Count of X" (both counts), "Min of X", "Standard deviation of X"….
+    Counts are never `FORMAT`-ted. An unknown aggregation fails the export (400), as a
+    field or as a value-filter target. All nine were verified against native
+    `exportData` on LargeExportReport Page5 `table5` (999 rows, 0 mismatches), and value
+    filters on `Count`/`CountNonNull` targets matched native too. (Before this, `Count`
+    was computed as `COUNT`, and Median/StdDev/Variance fell back to `SUM`.)
+  - **Hierarchy levels** on a visual (`{table, hierarchy, hierarchyLevel}`, optionally
+    with `aggregation`) resolve to the level's column (`ResolveHierarchyLevels`),
+    headed by the level name as native does. A level that can't be resolved fails the
+    export. Level sort keys resolve the same way.
   - **Hidden fields** — two unrelated kinds:
     - **Model-hidden** (TOM `IsHidden`) columns/measures placed on a visual are
       displayed by the visual and included by native export, so they're exported
@@ -444,8 +473,16 @@ _sample/                                   upstream MS "Embed for your customers
       96.2 s vs 92.4 s (still = read time); memory unchanged.
     - Before this, an implicit-measure target was mistranslated as a filter on the
       raw column's values; it now filters the aggregate.
-    - **Hierarchy** targets (hierarchy slicers `filterType 9`, tuple filters
-      `filterType 6`) are skipped with a warning (a known gap).
+    - **Hierarchy slicers** (`filterType 9`, `hierarchyData`) and **tuple filters**
+      (`filterType 6`) → one multi-column filter table: `TREATAS({(v1, v2), …}, c1, c2)`
+      for `In`, `FILTER(ALL(c1, c2), NOT((c1, c2) IN {…}))` for `NotIn`, including
+      inverted ("Select all, then clear") and mixed-depth selections. A filter target on
+      a hierarchy level resolves to the level's column. A multi-column filter that can't
+      be translated **fails** the export. Verified against native on LargeExportReport
+      (`table3` 70 rows, Page4).
+    - **Not translated**: relative date/time filters (`filterType 4`/`7`) are dropped
+      without a warning, and an unsupported advanced condition is dropped from a
+      column filter — both can over-export (backlog).
     - **Date/time values** in filters go through `ClientTime`: a value with an offset
       or `Z` is converted to the wall time in the request's `timeZone` (IANA; unknown
       zone → 400; absent → read as UTC), a value without one is used as written. Before
@@ -635,7 +672,7 @@ both together, and bump the version on a breaking wire change.
   | `models/FieldParamTest` + `reports/FieldParamReport` | **Field parameter** (calc table with `ParameterMetadata`); self-contained M-literal tables (refresh with no credentials). |
   | `models/DqParamTest` + `reports/DqParamReport` | **Dynamic M query parameters** over a **DirectQuery** Warehouse: `RegionParam` (single value), `CategoryParam` (multi-select, `selectAllValue`), `FromDateParam` (Date) and `ToDateTimeParam` (DateTime) are bound to the Import picker tables `RegionPicker`/`CategoryPicker`/`DatePicker`/`DateTimePicker`, which `slicer1`–`slicer4` filter; the `Sales` native query folds all four into its `WHERE`. Golden case `dq-table1-mparameter-slicers`. |
   | `reports/StoreSales` | **Variety of visuals** (table, matrix, column/bar/line/donut charts, card, slicer) + **report-level measures** in `reportExtensions.json` (Page3 `rmTable`: two report measures, one built on the other, sorted by one). Default embedded report. |
-  | `models/LargeExportTest` + `reports/LargeExportReport` | **Scale + data-type/format fidelity**: a deterministic **2M-row × 31-column** DAX calculated table (every data type, many format strings, CSV-hostile strings, BLANKs, > 2^53 int64, one hidden column). Both generated by **`generate-large-export.py`** — edit the spec there, never the output. |
+  | `models/LargeExportTest` + `reports/LargeExportReport` | **Scale + data-type/format fidelity**: a deterministic **2M-row × 31-column** DAX calculated table (every data type, many format strings, CSV-hostile strings, BLANKs, > 2^53 int64, one hidden column), plus hierarchies (Sales Geography, Order Calendar). The report adds hierarchy slicer/level visuals (Page4) and every implicit aggregation (Page5 `table5`). Both generated by **`generate-large-export.py`** — edit the spec there, never the output. |
   | `samples/` | `StoreSales.pbix`, `SalesAndReturns` + decoded `salesreturns_tmdl/` (reference PBIX/TMDL syntax). |
 
 - **`compare-exports.py api.csv [native.csv] [--expect-rows N]`** checks an API
@@ -759,19 +796,23 @@ detailed here.
   has no "all except" state (unchecking after "Select all" clears the selection).
   `NotIn`/comparison filters on a bound column are refused (400), as native export
   refuses them.
-- Filter translation skips **hierarchy-level** filter targets (with a warning),
-  including **hierarchy slicer** filters (`filterType 9`, `hierarchyData`): e.g.
-  LargeExportReport `table3` exports 72 rows instead of 70 because its
-  Region › Category slicer's North › Electronics exclusion is ignored. (Measure
-  value filters and Top N are supported — see **Filters** above; verified against
-  native export on StoreSales `table1`/`bar1`.) Relative date/time, Top N by a
-  hierarchy level, and "tuple" filters are also untranslated. Native `exportData`
-  fails ("Export visual data has failed") on `rmTable` (report measures), so its
+- **Hierarchy slicers, tuple filters and hierarchy levels** are supported (see
+  **Filters** and **Hierarchy levels** above). Filter translation still doesn't
+  handle **relative date/time** filters (`filterType 4`/`7`): `TranslateColumnFilter`
+  returns null and the filter is dropped **without a warning**, so the export can
+  include rows the visual excludes. An unsupported advanced condition is likewise
+  dropped from a column filter (a measure value filter or Top N that can't be built is
+  skipped with a warning). Making these fail the export, as multi-column filters do,
+  is the next safety fix. (Measure value filters and Top N are supported and verified
+  against native export on StoreSales `table1`/`bar1`.) Native `exportData` fails
+  ("Export visual data has failed") on `rmTable` (report measures), so its
   measure-filter results were checked against the unfiltered values instead.
-- **Sort**: hierarchy-level `orderBy` expressions aren't mapped (skipped client-side);
-  a sort on a column not in the visual is skipped with a logged warning. The
-  implicit (no explicit sort) order is an approximation. Median/StdDev/Variance
-  implicit aggregations fall back to `SUM` server-side (pre-existing gap).
+- **Sort**: a sort on a column not in the visual is skipped with a logged warning.
+  The implicit (no explicit sort) order is an approximation. An explicit sort adds no
+  **tie-breakers**: Power BI orders ties by the remaining group-by columns ascending
+  (LargeExportReport `table4b`: Area within Month), so equal keys can come out in a
+  different order. Fix: append the remaining dimensions ascending in `BuildSortKeys`
+  (expect golden churn).
 
 ### API vs native `exportData` (measured on LargeExportReport `detail1`, 2,000 rows)
 

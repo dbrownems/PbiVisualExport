@@ -125,6 +125,20 @@ table (2,000,000 rows), so exports can be diffed row-by-row on `Row Id`.
 - **Page 3 "Select All Slicers"** — slicers with *Select all* enabled (all,
   all-but-one, a year subset, and a Region › Category **hierarchy** slicer with one
   exclusion) over `table3` (titled with the expected row count, 70).
+- **Page 4 "Hierarchies"** — the model's user hierarchies, *Sales Geography*
+  (Area › Line = Region › Category) and *Order Calendar* (Year › Month), have level
+  names that differ from their columns, so a level can only be resolved through the
+  hierarchy. `slicer4a` is a Sales Geography hierarchy slicer with *Select all* and no
+  saved selection (tests set slicer states and level filters through the SDK) over
+  `table4` (Year, Region, Category, Order Count; 240 rows unfiltered). `table4b` has
+  hierarchy **levels as fields** (Year, Month, Area, Count of Line) with a saved sort
+  on the Month level, descending (288 rows).
+- **Page 5 "Aggregations"** — `table5`: Customer Name, then `Nullable Amount` (which
+  has BLANKs) with **every implicit aggregation** (codes 0–8: Sum, Average,
+  Count (Distinct), Min, Max, Count, Median, Standard deviation, Variance), Count of the
+  Boolean `Is Returned`, and Order Count. There are about 40 rows per customer (999
+  customers), so sample and population statistics, and BLANK handling, give
+  different results.
 
 Compare the API export with Power BI's own export using
 `python infra/compare-exports.py api.csv native.csv`. A ~2,000-row native export
