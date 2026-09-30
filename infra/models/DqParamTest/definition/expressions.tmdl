@@ -4,11 +4,23 @@ expression RegionParam = "East" meta [IsParameterQuery=true, Type="Text", IsPara
 
 	annotation PBI_ResultType = Text
 
-expression CategoryParam = "__SelectAll__" meta [IsParameterQuery=true, Type="Text", IsParameterQueryRequired=true]
+expression CategoryParam = "Accessories" meta [IsParameterQuery=true, Type="Text", IsParameterQueryRequired=true]
 	lineageTag: 55555555-0000-0000-0000-000000000004
 	parameterValuesColumn: CategoryPicker.CategoryChoice
 
 	annotation PBI_ResultType = Text
+
+expression FromDateParam = #date(2024, 1, 1) meta [IsParameterQuery=true, Type="Date", IsParameterQueryRequired=true]
+	lineageTag: 55555555-0000-0000-0000-000000000005
+	parameterValuesColumn: DatePicker.FromDate
+
+	annotation PBI_ResultType = Date
+
+expression ToDateTimeParam = #datetime(2024, 12, 31, 23, 59, 59) meta [IsParameterQuery=true, Type="DateTime", IsParameterQueryRequired=true]
+	lineageTag: 55555555-0000-0000-0000-000000000006
+	parameterValuesColumn: DateTimePicker.ToDateTime
+
+	annotation PBI_ResultType = DateTime
 
 expression WhServer = "{{WarehouseServer:ExportTestWH}}" meta [IsParameterQuery=true, Type="Text", IsParameterQueryRequired=true]
 	lineageTag: 55555555-0000-0000-0000-000000000002

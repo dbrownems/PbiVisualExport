@@ -1,0 +1,27 @@
+table DateTimePicker
+	lineageTag: 66666666-0000-0000-0000-000000000017
+
+	column ToDateTime
+		dataType: dateTime
+		formatString: yyyy-mm-dd hh:nn:ss
+		lineageTag: 66666666-0000-0000-0000-000000000018
+		summarizeBy: none
+		sourceColumn: ToDateTime
+
+		extendedProperty ParameterMetadata =
+				{
+				  "version": 2,
+				  "kind": 1
+				}
+
+		annotation SummarizationSetBy = Automatic
+
+	partition DateTimePicker = m
+		mode: import
+		source =
+				let
+				    Source = #table(type table [ToDateTime = datetime], {{#datetime(2024, 1, 11, 6, 0, 0)}, {#datetime(2024, 4, 4, 0, 0, 0)}, {#datetime(2024, 4, 4, 0, 0, 1)}, {#datetime(2024, 12, 31, 23, 59, 59)}})
+				in
+				    Source
+
+	annotation PBI_ResultType = Table

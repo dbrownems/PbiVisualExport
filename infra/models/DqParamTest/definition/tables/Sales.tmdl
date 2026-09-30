@@ -79,7 +79,9 @@ table Sales
 				        if List.Contains(Categories, "__SelectAll__") then ""
 				        else if List.IsEmpty(Categories) then " AND 1 = 0"
 				        else " AND Category IN (" & Text.Combine(List.Transform(Categories, SqlText), ", ") & ")",
-				    Source = Sql.Database(WhServer, WhDatabase, [Query="SELECT SaleId, RegionName, Category, Product, Quantity, Amount, SaleDate FROM dbo.SalesFact WHERE RegionName = " & SqlText(RegionParam) & CategoryFilter])
+				    FromDateFilter = " AND SaleDate >= '" & Date.ToText(DateTime.Date(FromDateParam), [Format="yyyy-MM-dd", Culture="en-US"]) & "'",
+				    ToDateTimeFilter = " AND CAST(SaleDate AS datetime2(0)) < CAST('" & DateTime.ToText(ToDateTimeParam, [Format="yyyy-MM-ddTHH:mm:ss", Culture="en-US"]) & "' AS datetime2(0))",
+				    Source = Sql.Database(WhServer, WhDatabase, [Query="SELECT SaleId, RegionName, Category, Product, Quantity, Amount, SaleDate FROM dbo.SalesFact WHERE RegionName = " & SqlText(RegionParam) & CategoryFilter & FromDateFilter & ToDateTimeFilter])
 				in
 				    Source
 

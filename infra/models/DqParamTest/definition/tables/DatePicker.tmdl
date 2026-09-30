@@ -1,0 +1,29 @@
+table DatePicker
+	lineageTag: 66666666-0000-0000-0000-000000000015
+
+	column FromDate
+		dataType: dateTime
+		formatString: yyyy-mm-dd
+		lineageTag: 66666666-0000-0000-0000-000000000016
+		summarizeBy: none
+		sourceColumn: FromDate
+
+		extendedProperty ParameterMetadata =
+				{
+				  "version": 2,
+				  "kind": 1
+				}
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation UnderlyingDateTimeDataType = Date
+
+	partition DatePicker = m
+		mode: import
+		source =
+				let
+				    Source = #table(type table [FromDate = date], {{#date(2024, 1, 1)}, {#date(2024, 2, 1)}, {#date(2024, 3, 1)}, {#date(2024, 4, 1)}, {#date(2024, 5, 1)}})
+				in
+				    Source
+
+	annotation PBI_ResultType = Table

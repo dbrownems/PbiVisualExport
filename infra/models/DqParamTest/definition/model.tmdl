@@ -7,6 +7,8 @@ model Model
 		returnErrorValuesAsNull
 
 ref table CategoryPicker
+ref table DatePicker
+ref table DateTimePicker
 ref table Region
 ref table RegionPicker
 ref table Sales
