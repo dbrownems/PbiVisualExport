@@ -283,11 +283,26 @@ _sample/                                   upstream MS "Embed for your customers
       selection → `reading 'general'`; a slicer in the interactive "Select all" state →
       `slicerSerializationFailed`); the slicer is then looked up in the captured bookmark
       (`singleVisual.objects.merge.general[].properties.filter`): no filter there =
-      no selection; a filter whose every `Where` condition is `Comparison`
-      (`ComparisonKind 0`) of a column with `AnyValue` = "Select all", sent as
-      `{ operator: "All", values: [], selectAll: true }` (the marker is needed: an SDK
-      `All` filter can't be told apart from no selection); anything else **aborts** the
-      export (`slicerUnreadable`; dropping a slicer would silently over-export).
+      no selection; otherwise the semantic query is translated (`queryFilters`), and
+      anything untranslatable **aborts** the export (`slicerUnreadable`; dropping a
+      slicer would silently over-export).
+    - **Filter-pane cards**: a card in the "Select all" state makes `getFilters()`
+      reject with `undefined` for its **whole level** (report, page or visual), so
+      every other card at that level would be lost too. `levelFilters` then reads the
+      level from the bookmark: `explorationState.filters`,
+      `.sections[page].filters`, `.sections[page].visualContainers[visual].filters`
+      (`byExpr[]`; a card with no selection has no `filter`). An unreadable bookmark or
+      untranslatable card aborts (`filtersUnreadable`).
+    - **Bookmark translation** (`queryFilters`, one basic filter per `Where`
+      condition): `Comparison` (`ComparisonKind 0`) of a column with `AnyValue` =
+      "Select all" (slicer or filter-pane card on a column bound to a dynamic M
+      parameter), sent as `{ operator: "All", values: [], selectAll: true }` (the
+      marker is needed: an SDK `All` filter can't be told apart from no selection);
+      `In` / `Not(In)` over one column with literal rows = `In` / `NotIn`. Literals:
+      `'text'` (`''` escapes), `3L`, `1.5D`/`1.5M`, `true`/`false`, `null`,
+      `datetime'2024-01-11T00:00:00'` (report-local wall time, no offset; the server's
+      `ClientTime` reads it as is). Measure/comparison/Top N/relative-date conditions,
+      tuples and subqueries aren't translated (abort).
     - **Time zone** (`browserTimeZone`): the browser's IANA zone, sent as `timeZone`.
       The SDK serializes date filter values with `toISOString()` — the local wall time
       as a UTC instant (local 2024-02-01 00:00 at UTC-6 → `…T06:00:00.000Z`) — and the
@@ -563,8 +578,9 @@ both together, and bump the version on a breaking wire change.
 }
 ```
 
-- A slicer in the "Select all" state arrives in `filters` as a basic `All` filter with
-  an extra `selectAll: true` (additive; ignored except on an M-parameter binding).
+- A slicer or filter-pane card in the "Select all" state arrives in `filters` as a basic
+  `All` filter with an extra `selectAll: true` (additive; ignored except on an
+  M-parameter binding).
 - An `ExportField` is a **column** (`column`), a **measure** (`measure`), or a
   **column + implicit aggregation** (`column` + `aggregation`). `Header` is an
   optional server-side display override. `hidden` = hidden on the visual (computed,
@@ -735,9 +751,11 @@ detailed here.
   label (`ExportField.Header` exists to carry it).
 - **Dynamic M parameter bindings** are supported (see **Filters** above; verified
   against native export on DqParamReport: single/multi-select, interactive "Select
-  all", Date and DateTime parameters). Gaps: a programmatic "Select all"
+  all" on a slicer and on a filter-pane card (alone, and next to a card with a
+  selection), Date and DateTime parameters). Gaps: a programmatic "Select all"
   (`setSlicerState` with `All`) fails with `invalidFilter`, so it was tested by
-  clicking; a filter-pane "Select all" on a bound column is untested. A bound slicer
+  clicking (the filter-pane state was then replayed with
+  `bookmarksManager.applyState`, which only updates cards that exist). A bound slicer
   has no "all except" state (unchecking after "Select all" clears the selection).
   `NotIn`/comparison filters on a bound column are refused (400), as native export
   refuses them.

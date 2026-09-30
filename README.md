@@ -336,16 +336,19 @@ silently truncated file.
   - Top N
   - measure value filters, evaluated at the visual's grain, as Power BI does
   - slicer selections, including "select all" with exclusions
+  - filter-pane cards the SDK can't serialize (a card in the "Select all" state makes
+    `getFilters()` fail for its whole level): read from the report's bookmark state
+    instead; a card that can't be translated from there stops the export
   - date and date-time filters, read in the browser's time zone (the SDK sends them as
     UTC instants of the local time; the client adds `timeZone`)
   - filters and slicers on a column bound to a **dynamic M query parameter**: as in
     Power BI's own query, the selection sets the parameter (`MPARAMETER`, so a
     DirectQuery source query or an M filter sees it) and filters the column. Values
     that aren't in the bound column are rejected (400) unless
-    `Export:ValidateParameterValues` is off. A "Select all" slicer sets the binding's
-    `selectAllValue`. Date and date-time parameters are set as `DATE(…)` /
-    `DATE(…) + TIME(…)`, like Power BI; M receives a datetime either way, so a model
-    that needs a date should use `DateTime.Date(param)`.
+    `Export:ValidateParameterValues` is off. "Select all" on a slicer or a filter-pane
+    card sets the binding's `selectAllValue`. Date and date-time parameters are set as
+    `DATE(…)` / `DATE(…) + TIME(…)`, like Power BI; M receives a datetime either way,
+    so a model that needs a date should use `DateTime.Date(param)`.
   - field parameters (the visual's selected columns are exported)
 - **Formatting**:
   - Formatted (default): the model's format strings, applied by the engine's

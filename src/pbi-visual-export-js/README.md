@@ -131,6 +131,7 @@ Failures reject with a `PbiExportError`, which has a `code`:
 | `http` | The server refused. See `status` (400 bad request, 403 not allowed, 429 too many exports) and `problems`. |
 | `signInRequired` | Dev only: the server needs an XMLA device-code sign-in. Show `signIn.verificationUri` and `signIn.userCode`, `await exporter.waitForSignIn()`, then retry. |
 | `slicerUnreadable` | A slicer's selection couldn't be read. The client stops rather than export too many rows. |
+| `filtersUnreadable` | The report, page or visual filters couldn't be read, from the SDK or from the bookmark. The client stops rather than export too many rows. |
 | `authoringApiMissing` | `powerbi-report-authoring` isn't loaded. |
 | `noFields`, `missingIds`, `pickerUnavailable`, `network`, `downloadFailed`, `aborted` | See `src/errors.ts`. |
 
@@ -141,9 +142,12 @@ Failures reject with a `PbiExportError`, which has a `code`:
   write them.
 - **Filters**: report, page and visual filters, plus the page's slicer selections. If a
   slicer isn't rendered yet, the client activates its page. If the SDK can't serialize
-  a slicer, the client falls back to the bookmark state. A slicer in the "Select all"
-  state is sent as an `All` filter marked `selectAll: true`, so the server can set a
-  bound dynamic M parameter to its select-all value.
+  a slicer, or a level's filters (a filter-pane card in the "Select all" state makes
+  `getFilters()` fail for its whole level), the client falls back to the bookmark
+  state. It translates `In` / `NotIn` value lists and "Select all" from there, and
+  stops on anything else. "Select all" is sent as an `All` filter marked
+  `selectAll: true`, so the server can set a bound dynamic M parameter to its
+  select-all value.
 - **Time zone**: the browser's IANA time zone (`timeZone`). The SDK sends date filter
   values as UTC instants of the browser's local time; the server converts them back.
 - **Sort** (only with `sort: true`): read from `bookmarksManager.capture()`, which holds
