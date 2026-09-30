@@ -141,7 +141,11 @@ Failures reject with a `PbiExportError`, which has a `code`:
   write them.
 - **Filters**: report, page and visual filters, plus the page's slicer selections. If a
   slicer isn't rendered yet, the client activates its page. If the SDK can't serialize
-  a slicer, the client falls back to the bookmark state.
+  a slicer, the client falls back to the bookmark state. A slicer in the "Select all"
+  state is sent as an `All` filter marked `selectAll: true`, so the server can set a
+  bound dynamic M parameter to its select-all value.
+- **Time zone**: the browser's IANA time zone (`timeZone`). The SDK sends date filter
+  values as UTC instants of the browser's local time; the server converts them back.
 - **Sort** (only with `sort: true`): read from `bookmarksManager.capture()`, which holds
   the live sort or the saved default.
 

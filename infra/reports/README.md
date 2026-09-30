@@ -21,7 +21,7 @@ a new report.
 |---|---|---|---|---|
 | `StoreSales` | `StoreSales` | Enhanced PBIR | Variety of visuals + **report-level measures** | tableEx, matrix (`pivotTable`), clusteredColumnChart, clusteredBarChart, lineChart, donutChart, card, slicer |
 | `FieldParamReport` | `FieldParamTest` | Enhanced PBIR | **Field parameter** — a slicer selects which fields `fpTable` projects; `table1` shows the parameter column itself | tableEx, slicer |
-| `DqParamReport` | `DqParamReport` (deployed from `models/DqParamTest`) | Enhanced PBIR | **Dynamic M query parameters** (single-value and multi-select) bound to slicers over a DirectQuery model | tableEx, slicer |
+| `DqParamReport` | `DqParamReport` (deployed from `models/DqParamTest`) | Enhanced PBIR | **Dynamic M query parameters** (single-value, multi-select with *Select all*, Date and DateTime) bound to slicers over a DirectQuery model | tableEx, slicer |
 | `LargeExportReport` | `LargeExportTest` | Enhanced PBIR | **2M rows × 31 columns**, every data type + many format strings; native vs API export comparison | tableEx, matrix (`pivotTable`), card, slicer |
 
 > The dataset a report binds to is set in its `definition.pbir`
@@ -77,23 +77,32 @@ parameter (Category / Segment / Product Name → `Product[Category|Segment|Produ
 
 One page over the DirectQuery model `DqParamReport` (folder `models/DqParamTest`).
 Its `Sales` table is a native SQL query against the `ExportTestWH` Warehouse whose
-`WHERE` clause is built from two M parameters, each bound to a disconnected Import
+`WHERE` clause is built from four M parameters, each bound to a disconnected Import
 picker table:
 
 | Parameter | Default | Bound column | Binding |
 |---|---|---|---|
 | `RegionParam` | `"East"` | `RegionPicker[RegionChoice]` (East, West, North, South) | single value |
-| `CategoryParam` | `"__SelectAll__"` (no category filter) | `CategoryPicker[CategoryChoice]` (Accessories, Bikes, Clothing) | multi-select (`supportsMultipleValues`, `selectAllValue`) |
+| `CategoryParam` | `"Accessories"` | `CategoryPicker[CategoryChoice]` (Accessories, Bikes, Clothing) | multi-select (`supportsMultipleValues`, `selectAllValue` `"__SelectAll__"` = no category filter) |
+| `FromDateParam` | `#date(2024, 1, 1)` | `DatePicker[FromDate]` (the 1st of Jan–May 2024) | single value, `Type="Date"`: `SaleDate >= FromDate` |
+| `ToDateTimeParam` | `#datetime(2024, 12, 31, 23, 59, 59)` | `DateTimePicker[ToDateTime]` (2024-01-11 06:00, 2024-04-04 00:00:00 and 00:00:01, 2024-12-31 23:59:59) | single value, `Type="DateTime"`: `SaleDate < ToDateTime` |
 
 - **`table1`** — Category, Product, SaleDate, Total Quantity, Total Amount from
-  `Sales`. With no selection it shows East's 5 rows.
+  `Sales`. With the saved slicer states it shows East's Accessories (Helmet, Tire).
 - **`slicer1`** — single-select dropdown on `RegionPicker[RegionChoice]`.
-- **`slicer2`** — multi-select list on `CategoryPicker[CategoryChoice]`.
+- **`slicer2`** — multi-select list on `CategoryPicker[CategoryChoice]` with *Select
+  all*. Its saved state (inverted mode, nothing excluded) sends no parameter value, so
+  the default applies. The default isn't the select-all value on purpose: an
+  interactive *Select all* must send `"__SelectAll__"` to show all 5 East rows.
+- **`slicer3`** / **`slicer4`** — single-select dropdowns on `DatePicker[FromDate]`
+  and `DateTimePicker[ToDateTime]`. The date-time values straddle East's Road-250 sale
+  (2024-04-04 00:00): `00:00:00` excludes it, `00:00:01` includes it.
 
 Each region has 5 sales, so an export that ignores the parameters shows East's rows
 whatever the slicers say. West + Bikes, Clothing gives 4 rows (Mountain-500,
-Road-150, Gloves, Vest). The golden DAX case `dq-table1-mparameter-slicers` covers
-the query shape.
+Road-150, Gloves, Vest). The M wraps the date parameter in `DateTime.Date(…)`:
+Power BI (and the module) set it as `DATE(…)`, which M receives as a datetime. The
+golden DAX case `dq-table1-mparameter-slicers` covers the query shape.
 
 ### LargeExportReport — the scale / fidelity report
 

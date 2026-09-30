@@ -280,11 +280,18 @@ _sample/                                   upstream MS "Embed for your customers
       slicer states. Slicers on a page that isn't rendered throw
       `visualConfigIsNotInitialized`, so the client **activates the visual's page**
       and retries. The SDK serializer also throws on some slicers (no saved
-      selection → `reading 'general'`; "select all" slicers have been reported to throw `slicerSerializationFailed`);
-      the slicer is then looked up in the captured bookmark
+      selection → `reading 'general'`; a slicer in the interactive "Select all" state →
+      `slicerSerializationFailed`); the slicer is then looked up in the captured bookmark
       (`singleVisual.objects.merge.general[].properties.filter`): no filter there =
-      no selection, otherwise the export **aborts** (dropping a slicer would silently
-      over-export).
+      no selection; a filter whose every `Where` condition is `Comparison`
+      (`ComparisonKind 0`) of a column with `AnyValue` = "Select all", sent as
+      `{ operator: "All", values: [], selectAll: true }` (the marker is needed: an SDK
+      `All` filter can't be told apart from no selection); anything else **aborts** the
+      export (`slicerUnreadable`; dropping a slicer would silently over-export).
+    - **Time zone** (`browserTimeZone`): the browser's IANA zone, sent as `timeZone`.
+      The SDK serializes date filter values with `toISOString()` — the local wall time
+      as a UTC instant (local 2024-02-01 00:00 at UTC-6 → `…T06:00:00.000Z`) — and the
+      report filters on the wall time, so the server converts back (`ClientTime`).
     - **Sort** (`gatherSort`): not exposed by any SDK getter, so it's read from
       `report.bookmarksManager.capture({allPages:true})` (`state` = base64 gzip JSON
       → `explorationState.sections[page].visualContainers[visual].singleVisual.orderBy[]`).
@@ -424,6 +431,12 @@ _sample/                                   upstream MS "Embed for your customers
       raw column's values; it now filters the aggregate.
     - **Hierarchy** targets (hierarchy slicers `filterType 9`, tuple filters
       `filterType 6`) are skipped with a warning (a known gap).
+    - **Date/time values** in filters go through `ClientTime`: a value with an offset
+      or `Z` is converted to the wall time in the request's `timeZone` (IANA; unknown
+      zone → 400; absent → read as UTC), a value without one is used as written. Before
+      this, every date filter was off by the UTC offset (an `In 2024-01-11` basic filter
+      matched nothing). Verified against native on DqParamReport: `In`, `>=`, `<` on
+      `Sales[SaleDate]`, and Date/DateTime parameters.
     - **Dynamic M query parameters.** A named expression with `ParameterValuesColumn`
       (TMDL `parameterValuesColumn`) is bound to that column; a filter or slicer on
       the column also sets the parameter, as Power BI's own query does (traced):
@@ -433,13 +446,20 @@ _sample/                                   upstream MS "Embed for your customers
       property has `supportsMultipleValues: true`. Only selections of values bind:
       basic `In`, or advanced `Is` conditions (`Or` = union, `And` = intersection);
       several filters on the column intersect. `All` or an empty selection leaves the
-      parameter at its default (no `MPARAMETER`). `NotIn`, comparisons, an empty
+      parameter at its default (no `MPARAMETER`), as Power BI does for a slicer's saved
+      state. An `All` filter marked `selectAll: true` (the client's "Select all") sets
+      the binding's `selectAllValue` from `ParameterMetadata` (`{value}` when
+      multi-select, as Power BI does — traced: `{"__SelectAll__"}`); no `selectAllValue`
+      → 400; explicit values on the same column replace it. `NotIn`, comparisons, an empty
       intersection, or several values on a single-value parameter → **400** (native
-      export fails on those too). `MPARAMETER` takes any DAX expression (verified), so
-      date literals (`DATE(...)`) work. With `Export:ValidateParameterValues` (default
+      export fails on those too). Date parameters are `DATE(y, m, d)`, date-time ones
+      `(DATE(…) + TIME(…))` — both identical to Power BI's traced literals; M receives a
+      datetime even for a `Type="Date"` parameter, so the model's M must use
+      `DateTime.Date(param)`. With `Export:ValidateParameterValues` (default
       true) `CsvExportService` checks each parameter's values against the bound column
       (`EVALUATE EXCEPT({values}, VALUES(col))`, same connection) and rejects unknown
-      ones (400). Power BI does no such check: it passes any value to the source
+      ones (400); the select-all value (`MParameterValue.SelectAll`) is skipped, since
+      it comes from the model, not the client. Power BI does no such check: it passes any value to the source
       (traced: `"Nowhere"` reached the SQL `WHERE`). Before this, the parameter was
       never set: every export read the parameter's default (e.g. East) whatever the
       slicer said.
@@ -538,10 +558,13 @@ both together, and bump the version on a breaking wire change.
   ],
   "applySort": true,           // server default true; the JS client sends false unless sort: true
   "applyFormatStrings": true,  // false = raw typed values
+  "timeZone": "America/Chicago",  // browser's IANA zone for date filter values (optional)
   "sortSource": "bookmark"     // diagnostic only (ignored by the server)
 }
 ```
 
+- A slicer in the "Select all" state arrives in `filters` as a basic `All` filter with
+  an extra `selectAll: true` (additive; ignored except on an M-parameter binding).
 - An `ExportField` is a **column** (`column`), a **measure** (`measure`), or a
   **column + implicit aggregation** (`column` + `aggregation`). `Header` is an
   optional server-side display override. `hidden` = hidden on the visual (computed,
@@ -594,7 +617,7 @@ both together, and bump the version on a breaking wire change.
   | Folder | Exercises |
   |---|---|
   | `models/FieldParamTest` + `reports/FieldParamReport` | **Field parameter** (calc table with `ParameterMetadata`); self-contained M-literal tables (refresh with no credentials). |
-  | `models/DqParamTest` + `reports/DqParamReport` | **Dynamic M query parameters** over a **DirectQuery** Warehouse: `RegionParam` (single value) and `CategoryParam` (multi-select) are bound to the Import picker tables `RegionPicker`/`CategoryPicker`, which `slicer1`/`slicer2` filter; the `Sales` native query folds both into its `WHERE`. Golden case `dq-table1-mparameter-slicers`. |
+  | `models/DqParamTest` + `reports/DqParamReport` | **Dynamic M query parameters** over a **DirectQuery** Warehouse: `RegionParam` (single value), `CategoryParam` (multi-select, `selectAllValue`), `FromDateParam` (Date) and `ToDateTimeParam` (DateTime) are bound to the Import picker tables `RegionPicker`/`CategoryPicker`/`DatePicker`/`DateTimePicker`, which `slicer1`–`slicer4` filter; the `Sales` native query folds all four into its `WHERE`. Golden case `dq-table1-mparameter-slicers`. |
   | `reports/StoreSales` | **Variety of visuals** (table, matrix, column/bar/line/donut charts, card, slicer) + **report-level measures** in `reportExtensions.json` (Page3 `rmTable`: two report measures, one built on the other, sorted by one). Default embedded report. |
   | `models/LargeExportTest` + `reports/LargeExportReport` | **Scale + data-type/format fidelity**: a deterministic **2M-row × 31-column** DAX calculated table (every data type, many format strings, CSV-hostile strings, BLANKs, > 2^53 int64, one hidden column). Both generated by **`generate-large-export.py`** — edit the spec there, never the output. |
   | `samples/` | `StoreSales.pbix`, `SalesAndReturns` + decoded `salesreturns_tmdl/` (reference PBIX/TMDL syntax). |
@@ -624,7 +647,8 @@ both together, and bump the version on a breaking wire change.
     {"version":2,"kind":1}` (add `"supportsMultipleValues": true, "selectAllValue":
     "__SelectAll__"` for multi-select, and make the M accept a list). Use a
     **disconnected** picker table: filtering it has no effect except through the
-    parameter.
+    parameter. A `Type="Date"` parameter arrives in M as a **datetime** (Power BI sends
+    `DATE(…)`), so wrap it: `Date.ToText(DateTime.Date(FromDateParam), …)`.
   - Field parameter: 3-column calc table, `source = { ("Label", NAMEOF('T'[Col]), 0), ... }`,
     in the Desktop shape: the label column (`[Value1]`) has
     `relatedColumnDetails` → `groupByColumn: 'Fields Fields'`; only the hidden value
@@ -710,12 +734,13 @@ detailed here.
   export uses the parameter label (`Product Name`); the SDK doesn't expose that
   label (`ExportField.Header` exists to carry it).
 - **Dynamic M parameter bindings** are supported (see **Filters** above; verified
-  against native export on DqParamReport). Gaps: "Select all" on a multi-select
-  parameter slicer is untested. Set through the API (`NotIn []`), it makes the
-  client's slicer read fail (`slicerUnreadable`), and native export fails too. If a
-  real "Select all" arrived as no selection, the parameter would keep its default,
-  which is right only if the default is the `selectAllValue`. `NotIn`/comparison
-  filters on a bound column are refused (400), as native export refuses them.
+  against native export on DqParamReport: single/multi-select, interactive "Select
+  all", Date and DateTime parameters). Gaps: a programmatic "Select all"
+  (`setSlicerState` with `All`) fails with `invalidFilter`, so it was tested by
+  clicking; a filter-pane "Select all" on a bound column is untested. A bound slicer
+  has no "all except" state (unchecking after "Select all" clears the selection).
+  `NotIn`/comparison filters on a bound column are refused (400), as native export
+  refuses them.
 - Filter translation skips **hierarchy-level** filter targets (with a warning),
   including **hierarchy slicer** filters (`filterType 9`, `hierarchyData`): e.g.
   LargeExportReport `table3` exports 72 rows instead of 70 because its

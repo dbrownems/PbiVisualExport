@@ -257,7 +257,7 @@ Section `PbiVisualExport` (environment variables use `__`, for example
 | `Export:FieldValidation` | `Strict` | `Strict`: fields must be in the visual's saved PBIR definition, and PBIR-Legacy reports are refused. `PbirOnly`: PBIR-Legacy reports are exported unchecked. `Off`: trust the request. |
 | `Export:MaxRows` | `0` | A cap on rows (`TOPN`), where 0 means unlimited. |
 | `Export:CommandTimeoutSeconds` | `0` | The XMLA command timeout, where 0 means none. |
-| `Export:ValidateParameterValues` | `true` | Rejects (400) a filter that would set a dynamic M query parameter to a value missing from its bound column. Power BI passes such values to the source unchecked; `false` does the same. |
+| `Export:ValidateParameterValues` | `true` | Rejects (400) a filter that would set a dynamic M query parameter to a value missing from its bound column. Power BI passes such values to the source unchecked; `false` does the same. The model's own select-all value isn't checked. |
 | `Export:MaxConcurrentExportsPerUser` | `2` | Above this, requests get 429. 0 means unlimited. |
 | `Export:MaxConcurrentExports` | `0` | A process-wide limit (429 above it). 0 means unlimited. |
 | `Export:EnableBenchmark` | `false` | Enables `POST bench`. |
@@ -301,7 +301,8 @@ and rejects any ID or name the client sends that disagrees with it.
   "filters": [ /* Power BI IFilter objects: report, page, visual, slicers */ ],
   "applyFormatStrings": true,     // default true: DAX FORMAT() with the model's format strings; false = raw values
   "applySort": false,             // ORDER BY "sort". Server default true; the JS client sends false unless sort: true
-  "sort": [ { "table": "Sales", "measure": "Total Sales", "direction": "Descending" } ]   // [] = implicit order
+  "sort": [ { "table": "Sales", "measure": "Total Sales", "direction": "Descending" } ],  // [] = implicit order
+  "timeZone": "America/Chicago"   // browser's IANA zone; UTC date filter values are read as wall time there
 }
 ```
 
@@ -335,11 +336,16 @@ silently truncated file.
   - Top N
   - measure value filters, evaluated at the visual's grain, as Power BI does
   - slicer selections, including "select all" with exclusions
+  - date and date-time filters, read in the browser's time zone (the SDK sends them as
+    UTC instants of the local time; the client adds `timeZone`)
   - filters and slicers on a column bound to a **dynamic M query parameter**: as in
     Power BI's own query, the selection sets the parameter (`MPARAMETER`, so a
     DirectQuery source query or an M filter sees it) and filters the column. Values
     that aren't in the bound column are rejected (400) unless
-    `Export:ValidateParameterValues` is off.
+    `Export:ValidateParameterValues` is off. A "Select all" slicer sets the binding's
+    `selectAllValue`. Date and date-time parameters are set as `DATE(…)` /
+    `DATE(…) + TIME(…)`, like Power BI; M receives a datetime either way, so a model
+    that needs a date should use `DateTime.Date(param)`.
   - field parameters (the visual's selected columns are exported)
 - **Formatting**:
   - Formatted (default): the model's format strings, applied by the engine's
@@ -358,7 +364,7 @@ silently truncated file.
 | Hierarchy slicers and hierarchy-level filter targets (`filterType` 9), tuple filters (6), relative date/time filters, Top N by a hierarchy level | Skipped with a warning, so the export can include rows the visual excludes. |
 | Cross-filtering or highlighting from a selection in another visual | Not captured. The client reads filters and slicer state only. |
 | Hierarchy-level sort keys | Skipped by the client. |
-| Filters on a column bound to a dynamic M query parameter | `NotIn` and comparison filters, and several values for a single-value parameter, are rejected (400); Power BI can't export these selections either. "Select all" on a multi-select parameter slicer is untested: set through the embedding API, the client can't read the slicer, and native export fails too. |
+| Filters on a column bound to a dynamic M query parameter | `NotIn` and comparison filters, and several values for a single-value parameter, are rejected (400); Power BI can't export these selections either. "Select all" on a binding without a `selectAllValue` is rejected (400). A parameter-bound slicer has no "all except" state: unchecking a value after "Select all" clears the selection. |
 | Median, StdDev and Variance implicit aggregations | Computed as `SUM`. |
 | No explicit sort | Power BI's implicit order is approximated: group-by columns ascending. |
 | Field-parameter visuals | Headers use the column name, not the parameter's label. |
