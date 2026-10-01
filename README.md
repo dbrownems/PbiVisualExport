@@ -355,6 +355,8 @@ silently truncated file.
     instead; a card that can't be translated from there stops the export
   - date and date-time filters, read in the browser's time zone (the SDK sends them as
     UTC instants of the local time; the client adds `timeZone`)
+  - relative date and time filters (last, this or next N days, weeks, calendar weeks,
+    months, years, minutes or hours): a UTC window evaluated when the export runs
   - filters and slicers on a column bound to a **dynamic M query parameter**: as in
     Power BI's own query, the selection sets the parameter (`MPARAMETER`, so a
     DirectQuery source query or an M filter sees it) and filters the column. Values
@@ -365,8 +367,8 @@ silently truncated file.
     so a model that needs a date should use `DateTime.Date(param)`.
   - field parameters (the visual's selected columns are exported)
   - any filter the export can't translate stops it (400) rather than being dropped,
-    which would export rows the visual excludes: relative date/time filters, an
-    unsupported condition or operator (e.g. `Between`), and a value or Top N filter
+    which would export rows the visual excludes: an unsupported condition or
+    operator (e.g. `Between`), and a value or Top N filter
     whose target can't be resolved. Filters that select nothing ("All", no values, no
     conditions) are ignored.
 - **Formatting**:
@@ -383,7 +385,7 @@ silently truncated file.
 
 | Gap | Effect |
 |---|---|
-| Relative date and relative time filters (`filterType` 4 and 7) | Not translated yet, so a visual with one can't be exported: the export fails with a 400 instead of including rows the visual excludes. |
+| Relative date and time filters | Evaluated in UTC when the export runs. Power BI uses the report's anchor time and local date, so near midnight or a period boundary the window can differ. A relative filter on a column bound to an M parameter is refused (400). |
 | Cross-filtering or highlighting from a selection in another visual | Not captured. The client reads filters and slicer state only. |
 | Filters on a column bound to a dynamic M query parameter | `NotIn` and comparison filters, and several values for a single-value parameter, are rejected (400); Power BI can't export these selections either. "Select all" on a binding without a `selectAllValue` is rejected (400). A parameter-bound slicer has no "all except" state: unchecking a value after "Select all" clears the selection. |
 | No explicit sort | Power BI's implicit order is approximated: group-by columns ascending. |

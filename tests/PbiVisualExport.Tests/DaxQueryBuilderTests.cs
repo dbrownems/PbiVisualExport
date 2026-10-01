@@ -57,7 +57,9 @@ public class DaxQueryBuilderTests
         r.Filters.Add(Fixtures.Filter(Basic("new column", "In", """["y"]""")));
         r.Filters.Add(Fixtures.Filter(Advanced("""{"table":"Sales","column":"New Advanced"}""", "And", """[{"operator":"Is","value":"x"}]""")));
         r.Filters.Add(Fixtures.Filter("""{"$schema":"http://powerbi.com/product/schema#topN","target":{"table":"Sales","column":"New TopN"},"filterType":5,"operator":"Top","itemCount":2,"orderBy":{"table":"Sales","measure":"Total"}}"""));
+        r.Filters.Add(Fixtures.Filter("""{"$schema":"http://powerbi.com/product/schema#relativeDate","target":{"table":"Sales","column":"New Relative"},"operator":0,"timeUnitsCount":3,"timeUnitType":0,"filterType":4}"""));
         // Inactive filters (nothing selected) and known columns don't count.
+        r.Filters.Add(Fixtures.Filter("""{"$schema":"http://powerbi.com/product/schema#relativeDate","target":{"table":"Sales","column":"Unset Relative"},"operator":0,"timeUnitType":0,"filterType":4}"""));
         r.Filters.Add(Fixtures.Filter(Basic("Unset", "In", "[]")));
         r.Filters.Add(Fixtures.Filter(Basic("All Selected", "All", """["x"]""")));
         r.Filters.Add(Fixtures.Filter(Advanced("""{"table":"Sales","column":"No Conditions"}""", "And", "[]")));
@@ -67,7 +69,8 @@ public class DaxQueryBuilderTests
         {
             new UnresolvedField("'Sales'[New Column]", null, false),
             new UnresolvedField("'Sales'[New Advanced]", null, false),
-            new UnresolvedField("'Sales'[New TopN]", null, false)
+            new UnresolvedField("'Sales'[New TopN]", null, false),
+            new UnresolvedField("'Sales'[New Relative]", null, false)
         }, DaxQueryBuilder.FindUnresolvedFields(r, Model));
     }
 
@@ -482,8 +485,6 @@ public class DaxQueryBuilderTests
     }
 
     [Theory]
-    [InlineData("""{"$schema":"http://powerbi.com/product/schema#relativeDate","target":{"table":"Sales","column":"Order Date"},"operator":0,"timeUnitsCount":3,"timeUnitType":3,"includeToday":true,"filterType":4}""", "relative date filter")]
-    [InlineData("""{"$schema":"http://powerbi.com/product/schema#relativeTime","target":{"table":"Sales","column":"Order Date"},"operator":0,"timeUnitsCount":2,"timeUnitType":1,"filterType":7}""", "relative time filter")]
     [InlineData("""{"$schema":"http://powerbi.com/product/schema#advanced","target":{"table":"Sales","column":"Region"},"filterType":0,"logicalOperator":"And","conditions":[{"operator":"Is","value":"East"},{"operator":"Between","value":"W"}]}""", "the condition 'Between' isn't supported")]
     [InlineData("""{"$schema":"http://powerbi.com/product/schema#advanced","target":{"table":"Sales","column":"Region"},"filterType":0,"logicalOperator":"Or","conditions":[{"operator":"Between","value":"W"},{"operator":"Is","value":"East"}]}""", "the condition 'Between' isn't supported")]
     [InlineData("""{"$schema":"http://powerbi.com/product/schema#includeExclude","target":{"table":"Sales","column":"Region"},"filterType":3,"isExclude":true,"values":["East"]}""", "includes or excludes specific data points")]
@@ -498,6 +499,92 @@ public class DaxQueryBuilderTests
         var ex = Assert.Throws<ExportRequestException>(() => Build(r));
         Assert.Contains(message, ex.Message);
         Assert.Contains("Export aborted", ex.Message);
+    }
+
+    // ---- Relative date/time filters (UTC window, evaluated at request time) ----
+
+    private static readonly DateTimeOffset Monday = new(2026, 7, 20, 14, 37, 25, TimeSpan.Zero);
+
+    private static string Rel(string op, string count, string unit, string? includeToday = "true", int filterType = 4, string column = "Order Date") =>
+        $$"""{"$schema":"http://powerbi.com/product/schema#{{(filterType == 7 ? "relativeTime" : "relativeDate")}}","target":{"table":"Sales","column":"{{column}}"},"operator":{{op}},"timeUnitsCount":{{count}},"timeUnitType":{{unit}}{{(includeToday is null ? "" : $",\"includeToday\":{includeToday}")}},"filterType":{{filterType}}}""";
+
+    private static string RelQuery(string filter, DateTimeOffset now)
+    {
+        var r = Samples.Request(Samples.Column("Sales", "Region"), Samples.Measure("Sales", "Total"));
+        r.Filters.Add(Fixtures.Filter(filter));
+        return new DaxQueryBuilder(new ManualTime { Now = now }).Build(r, Model).BuildQuery();
+    }
+
+    private static string Window(string start, string end) =>
+        $"FILTER(ALL('Sales'[Order Date]), 'Sales'[Order Date] >= {start} && 'Sales'[Order Date] < {end})";
+
+    [Theory]
+    [InlineData("0", "3", "0", "true", "DATE(2026, 7, 18)", "DATE(2026, 7, 21)")]     // last 3 days, including today
+    [InlineData("0", "3", "0", null, "DATE(2026, 7, 18)", "DATE(2026, 7, 21)")]       // includeToday defaults to true
+    [InlineData("0", "3", "0", "false", "DATE(2026, 7, 17)", "DATE(2026, 7, 20)")]    // last 3 days, without today
+    [InlineData("0", "1", "3", "true", "DATE(2026, 6, 21)", "DATE(2026, 7, 21)")]     // last 1 month
+    [InlineData("0", "2", "4", "true", "DATE(2026, 5, 1)", "DATE(2026, 7, 1)")]       // last 2 calendar months
+    [InlineData("0", "1", "2", "true", "DATE(2026, 7, 12)", "DATE(2026, 7, 19)")]     // last calendar week (weeks start Sunday)
+    [InlineData("1", "1", "1", "true", "DATE(2026, 7, 19)", "DATE(2026, 7, 26)")]     // this week
+    [InlineData("1", "1", "0", "true", "DATE(2026, 7, 20)", "DATE(2026, 7, 21)")]     // today
+    [InlineData("1", "1", "5", "true", "DATE(2026, 1, 1)", "DATE(2027, 1, 1)")]       // this year
+    [InlineData("2", "2", "1", "true", "DATE(2026, 7, 20)", "DATE(2026, 8, 3)")]      // next 2 weeks, including today
+    [InlineData("2", "2", "1", "false", "DATE(2026, 7, 21)", "DATE(2026, 8, 4)")]     // next 2 weeks, from tomorrow
+    [InlineData("2", "1", "6", "true", "DATE(2027, 1, 1)", "DATE(2028, 1, 1)")]       // next calendar year
+    [InlineData("\"InLast\"", "3", "\"Days\"", "true", "DATE(2026, 7, 18)", "DATE(2026, 7, 21)")] // enum names
+    public void RelativeDateFilters_BecomeAUtcWindow(string op, string count, string unit, string? includeToday, string start, string end)
+    {
+        var q = RelQuery(Rel(op, count, unit, includeToday), Monday);
+        Assert.Contains($"VAR _f0 = {Window(start, end)}", q);
+    }
+
+    [Fact]
+    public void RelativeDateFilters_ClampMonthEnds()
+    {
+        var q = RelQuery(Rel("0", "1", "3"), new DateTimeOffset(2026, 3, 31, 23, 59, 0, TimeSpan.Zero));
+        Assert.Contains(Window("DATE(2026, 3, 1)", "DATE(2026, 4, 1)"), q);
+    }
+
+    [Fact]
+    public void RelativeDateFilters_UseTheUtcDate()
+    {
+        // 2026-07-20 23:30 in Chicago is already 2026-07-21 in UTC; the service evaluates in UTC.
+        var q = RelQuery(Rel("1", "1", "0"), new DateTimeOffset(2026, 7, 20, 23, 30, 0, TimeSpan.FromHours(-5)));
+        Assert.Contains(Window("DATE(2026, 7, 21)", "DATE(2026, 7, 22)"), q);
+    }
+
+    [Theory]
+    [InlineData("0", "15", "7", "(DATE(2026, 7, 20) + TIME(14, 22, 0))", "(DATE(2026, 7, 20) + TIME(14, 37, 0))")] // last 15 minutes
+    [InlineData("1", "1", "8", "(DATE(2026, 7, 20) + TIME(14, 0, 0))", "(DATE(2026, 7, 20) + TIME(15, 0, 0))")]   // this hour
+    [InlineData("2", "2", "8", "(DATE(2026, 7, 20) + TIME(14, 37, 0))", "(DATE(2026, 7, 20) + TIME(16, 37, 0))")] // next 2 hours
+    [InlineData("0", "15", "\"Hours\"", "(DATE(2026, 7, 19) + TIME(23, 37, 0))", "(DATE(2026, 7, 20) + TIME(14, 37, 0))")] // crosses midnight
+    public void RelativeTimeFilters_BecomeAUtcWindow(string op, string count, string unit, string start, string end)
+    {
+        var q = RelQuery(Rel(op, count, unit, includeToday: null, filterType: 7), Monday);
+        Assert.Contains($"VAR _f0 = {Window(start, end)}", q);
+    }
+
+    [Theory]
+    [InlineData("0", "3", "0", 4, "Region", "not a date")]
+    [InlineData("0", "3", "0", 7, "Order Date", "doesn't support")]   // Days on a relative time filter
+    [InlineData("0", "3", "8", 4, "Order Date", "doesn't support")]   // Hours on a relative date filter
+    [InlineData("5", "3", "0", 4, "Order Date", "unknown operator")]
+    [InlineData("0", "3", "42", 4, "Order Date", "unknown time unit")]
+    [InlineData("0", "1.5", "0", 4, "Order Date", "whole, positive")]
+    public void RelativeFiltersThatCantBeTranslated_FailTheExport(string op, string count, string unit, int filterType, string column, string message)
+    {
+        var ex = Assert.Throws<ExportRequestException>(() => RelQuery(Rel(op, count, unit, filterType: filterType, column: column), Monday));
+        Assert.Contains(message, ex.Message);
+        Assert.Contains("Export aborted", ex.Message);
+    }
+
+    [Fact]
+    public void RelativeFilter_OnAnMParameterColumn_IsRefused()
+    {
+        var filter = """{"$schema":"http://powerbi.com/product/schema#relativeDate","target":{"table":"DatePicker","column":"FromDate"},"operator":0,"timeUnitsCount":3,"timeUnitType":0,"includeToday":true,"filterType":4}""";
+        var ex = Assert.Throws<ExportRequestException>(() => BuildDq(filter));
+        Assert.Contains("is a relative date filter", ex.Message);
+        Assert.Contains("FromDateParam", ex.Message);
     }
 
     [Theory]

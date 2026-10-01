@@ -243,6 +243,11 @@ internal sealed class DaxPlan
 /// </summary>
 internal sealed class DaxQueryBuilder
 {
+    private readonly TimeProvider clock;
+
+    /// <param name="clock">The clock relative date/time filters are evaluated against (UTC).</param>
+    public DaxQueryBuilder(TimeProvider? clock = null) => this.clock = clock ?? TimeProvider.System;
+
     /// <summary>
     /// Fields, sort measures and filter targets the model doesn't define. Measures may be
     /// report-level measures; <see cref="Build"/> needs the report definition to resolve them.
@@ -366,7 +371,7 @@ internal sealed class DaxQueryBuilder
 
         var extraGroupBy = GroupByKeyColumns(request, model, dims);
         var filters = BuildFilters(request.Filters, model, measures, name => UseReportMeasure(name) is not null,
-            new ClientTime(request.TimeZone));
+            new ClientTime(request.TimeZone, clock.GetUtcNow().UtcDateTime));
 
         List<SortKey> sortKeys;
         string sortDescription;
@@ -556,9 +561,10 @@ internal sealed class DaxQueryBuilder
     /// (visual-level value filters such as "Total Sales is greater than 1000") and Top N
     /// filters are evaluated as Power BI does (see <see cref="FilterSet"/>). A filter on a
     /// column bound to a dynamic M query parameter also sets the parameter (<c>MPARAMETER</c>).
-    /// Any filter that can't be translated (a relative date/time filter, an unsupported
-    /// condition, a filter measure or hierarchy level that doesn't exist...) fails the export
-    /// rather than export rows the visual excludes.
+    /// Relative date/time filters ("in the last 3 months") become a date window computed from
+    /// the UTC clock, as published reports evaluate them. Any filter that can't be translated
+    /// (an unsupported condition, a filter measure or hierarchy level that doesn't exist...)
+    /// fails the export rather than export rows the visual excludes.
     /// </summary>
     private static FilterSet BuildFilters(IEnumerable<JsonElement> filters, TOM.Model model, List<MeasureField> measures,
         Func<string, bool> isReportMeasure, ClientTime time)
@@ -685,6 +691,12 @@ internal sealed class DaxQueryBuilder
             $"The filter on {b.ColumnRef} {what}, but the column is bound to dynamic M query parameter {b.Name}, which needs " +
             "the selected values. Power BI can't export this selection either: select values with a slicer or an 'In' filter.");
 
+        if (IsRelative(filter))
+        {
+            if (RelativeActive(filter)) throw Unsupported($"is a relative {(IsRelativeTime(filter) ? "time" : "date")} filter");
+            return;
+        }
+
         var i = selections.FindIndex(s => s.Binding == b);
         if (filter.TryGetProperty("selectAll", out var sa) && sa.ValueKind == JsonValueKind.True)
         {
@@ -744,6 +756,111 @@ internal sealed class DaxQueryBuilder
     private static long TopNCount(JsonElement filter)
         => filter.TryGetProperty("itemCount", out var c) && c.ValueKind == JsonValueKind.Number && c.TryGetInt64(out var n) ? n : 0;
 
+    /// <summary>A relative date (<c>filterType 4</c>) or relative time (<c>filterType 7</c>) filter.</summary>
+    private static bool IsRelative(JsonElement filter)
+    {
+        var type = FilterTypeOf(filter);
+        if (type is 4 or 7) return true;
+        var schema = Str(filter, "$schema") ?? "";
+        return schema.Contains("relativeDate", StringComparison.OrdinalIgnoreCase) ||
+               schema.Contains("relativeTime", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsRelativeTime(JsonElement filter)
+        => FilterTypeOf(filter) == 7 ||
+           (Str(filter, "$schema")?.Contains("relativeTime", StringComparison.OrdinalIgnoreCase) ?? false);
+
+    /// <summary>A relative filter restricts rows only once its count is set (a cleared card has none).</summary>
+    private static bool RelativeActive(JsonElement filter)
+        => filter.TryGetProperty("timeUnitsCount", out var c) && c.ValueKind == JsonValueKind.Number &&
+           c.TryGetDouble(out var n) && n > 0;
+
+    private static readonly string[] RelativeOperators = ["InLast", "InThis", "InNext"];
+    private static readonly string[] RelativeUnits =
+        ["Days", "Weeks", "CalendarWeeks", "Months", "CalendarMonths", "Years", "CalendarYears", "Minutes", "Hours"];
+
+    /// <summary>An enum value sent as its number or its name (powerbi-models enums are numeric).</summary>
+    private static string? EnumName(JsonElement filter, string name, string[] names)
+    {
+        if (!filter.TryGetProperty(name, out var v)) return null;
+        if (v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out var i))
+            return i >= 0 && i < names.Length ? names[i] : null;
+        if (v.ValueKind == JsonValueKind.String)
+            return names.FirstOrDefault(n => Eq(n, v.GetString()));
+        return null;
+    }
+
+    /// <summary>
+    /// The half-open <c>[start, end)</c> window of a relative date or time filter, from the UTC
+    /// clock, as the Power BI service evaluates them. Weeks start on Sunday. Relative date:
+    /// "last/next N days|weeks|months|years" are rolling periods ending (starting) today when
+    /// <c>includeToday</c> (default true), else yesterday (tomorrow); calendar units are whole
+    /// periods before, at or after the current one ("this" is always the calendar period).
+    /// Relative time: minutes or hours back from (forward from) the current minute.
+    /// </summary>
+    private static (DateTime Start, DateTime End) RelativeWindow(JsonElement filter, bool isTime, DateTime utcNow, string colRef)
+    {
+        var kind = isTime ? "time" : "date";
+        ExportRequestException Bad(string problem) =>
+            new($"The relative {kind} filter on {colRef} {problem} Export aborted rather than export rows the visual excludes.");
+        var op = EnumName(filter, "operator", RelativeOperators) ?? throw Bad("has an unknown operator.");
+        var unit = EnumName(filter, "timeUnitType", RelativeUnits) ?? throw Bad("has an unknown time unit.");
+        if (!filter.TryGetProperty("timeUnitsCount", out var countEl) || countEl.ValueKind != JsonValueKind.Number ||
+            !countEl.TryGetInt32(out var n) || n <= 0)
+            throw Bad("needs a whole, positive number of units.");
+        var isTimeUnit = unit is "Minutes" or "Hours";
+        if (isTime != isTimeUnit)
+            throw Bad($"uses the unit {unit}, which a relative {kind} filter doesn't support.");
+
+        if (isTime)
+        {
+            var anchor = new DateTime(utcNow.Year, utcNow.Month, utcNow.Day, utcNow.Hour, utcNow.Minute, 0, DateTimeKind.Unspecified);
+            var step = unit == "Hours" ? TimeSpan.FromHours(1) : TimeSpan.FromMinutes(1);
+            return op switch
+            {
+                "InLast" => (anchor - step * n, anchor),
+                "InNext" => (anchor, anchor + step * n),
+                _ => unit == "Hours"
+                    ? (anchor.AddMinutes(-anchor.Minute), anchor.AddMinutes(-anchor.Minute).AddHours(1))
+                    : (anchor, anchor.AddMinutes(1)),
+            };
+        }
+
+        var today = DateTime.SpecifyKind(utcNow.Date, DateTimeKind.Unspecified);
+        var includeToday = !filter.TryGetProperty("includeToday", out var it) || it.ValueKind != JsonValueKind.False;
+        DateTime Add(DateTime d, int count) => unit switch
+        {
+            "Days" => d.AddDays(count),
+            "Weeks" or "CalendarWeeks" => d.AddDays(7 * count),
+            "Months" or "CalendarMonths" => d.AddMonths(count),
+            _ => d.AddYears(count),
+        };
+        DateTime PeriodStart() => unit switch
+        {
+            "Days" => today,
+            "Weeks" or "CalendarWeeks" => today.AddDays(-(int)today.DayOfWeek),
+            "Months" or "CalendarMonths" => new DateTime(today.Year, today.Month, 1),
+            _ => new DateTime(today.Year, 1, 1),
+        };
+
+        if (op == "InThis") { var p = PeriodStart(); return (p, Add(p, 1)); }
+
+        if (unit.StartsWith("Calendar", StringComparison.Ordinal))
+        {
+            var p = PeriodStart();
+            return op == "InLast" ? (Add(p, -n), p) : (Add(p, 1), Add(p, 1 + n));
+        }
+
+        // Rolling days, weeks, months, years.
+        if (op == "InLast")
+        {
+            var end = includeToday ? today.AddDays(1) : today;
+            return (Add(end, -n), end);
+        }
+        var start = includeToday ? today : today.AddDays(1);
+        return (start, Add(start, n));
+    }
+
     /// <summary>
     /// The columns and hierarchy levels active filters target: a column filter (basic values,
     /// advanced conditions or Top N), or each level of a hierarchy slicer selection or tuple
@@ -762,7 +879,8 @@ internal sealed class DaxQueryBuilder
         if (target.ValueKind != JsonValueKind.Object || IsMeasureTarget(target)) yield break;
         var active = IsTopN(filter)
             ? TopNCount(filter) > 0
-            : HasConditions(filter) || (NonEmptyArray(filter, "values") && !Eq(Str(filter, "operator"), "All"));
+            : HasConditions(filter) || (NonEmptyArray(filter, "values") && !Eq(Str(filter, "operator"), "All")) ||
+              (IsRelative(filter) && RelativeActive(filter));
         if (active) yield return target;
     }
 
@@ -976,17 +1094,16 @@ internal sealed class DaxQueryBuilder
         var filterType = FilterTypeOf(filter);
         const string aborted = "Export aborted rather than export rows the visual excludes.";
 
-        // Relative date/time ("in the last 3 months"): not translated yet. One with a count is
-        // active, so dropping it would over-export.
-        var relativeDate = filterType == 4 || schema.Contains("relativeDate", StringComparison.OrdinalIgnoreCase);
-        if (relativeDate || filterType == 7 || schema.Contains("relativeTime", StringComparison.OrdinalIgnoreCase))
+        // Relative date/time ("in the last 3 months"): a [start, end) window from the UTC clock.
+        if (IsRelative(filter))
         {
-            var active = filter.TryGetProperty("timeUnitsCount", out var countEl) && countEl.ValueKind == JsonValueKind.Number &&
-                countEl.TryGetDouble(out var count) && count > 0;
-            if (!active) return null;
-            throw new ExportRequestException(
-                $"The filter on {colRef} is a relative {(relativeDate ? "date" : "time")} filter (e.g. \"in the last 3 months\"), " +
-                $"which the export can't apply yet. {aborted}");
+            if (!RelativeActive(filter)) return null;
+            var isTime = IsRelativeTime(filter);
+            if (dataType != TOM.DataType.DateTime)
+                throw new ExportRequestException(
+                    $"The relative {(isTime ? "time" : "date")} filter on {colRef} targets a {dataType} column, not a date. {aborted}");
+            var (start, end) = RelativeWindow(filter, isTime, time.UtcNow, colRef);
+            return $"FILTER(ALL({colRef}), {colRef} >= {DateTimeLiteral(start)} && {colRef} < {DateTimeLiteral(end)})";
         }
 
         if (schema.EndsWith("#notSupported", StringComparison.OrdinalIgnoreCase))
@@ -1283,17 +1400,20 @@ internal sealed class DaxQueryBuilder
 
             case TOM.DataType.DateTime:
                 var raw = value.ValueKind == JsonValueKind.String ? value.GetString() : value.GetRawText();
-                if (time.TryParse(raw, out var dt))
-                {
-                    var datePart = $"DATE({dt.Year}, {dt.Month}, {dt.Day})";
-                    if (dt.TimeOfDay == TimeSpan.Zero) return datePart;
-                    return $"({datePart} + TIME({dt.Hour}, {dt.Minute}, {dt.Second}))";
-                }
+                if (time.TryParse(raw, out var dt)) return DateTimeLiteral(dt);
                 return QuoteString(raw ?? "");
 
             default:
                 return QuoteString(value.ValueKind == JsonValueKind.String ? value.GetString() ?? "" : value.ToString());
         }
+    }
+
+    /// <summary><c>DATE(y, m, d)</c>, plus <c>+ TIME(h, m, s)</c> when the value has a time of day.</summary>
+    internal static string DateTimeLiteral(DateTime dt)
+    {
+        var datePart = $"DATE({dt.Year}, {dt.Month}, {dt.Day})";
+        if (dt.TimeOfDay == TimeSpan.Zero) return datePart;
+        return $"({datePart} + TIME({dt.Hour}, {dt.Minute}, {dt.Second}))";
     }
 
     internal static string QuoteString(string s) => "\"" + s.Replace("\"", "\"\"") + "\"";
@@ -1335,8 +1455,11 @@ internal sealed record MeasureField(string Header, string Expression, string? Fo
 /// to the wall time in the browser's time zone (<see cref="VisualExportRequest.TimeZone"/>);
 /// without one, the wall time as written is used. Values without an offset are wall times.
 /// </summary>
-internal sealed class ClientTime(string? timeZoneId)
+internal sealed class ClientTime(string? timeZoneId, DateTime? utcNow = null)
 {
+    /// <summary>The clock relative date/time filters are evaluated against (UTC).</summary>
+    public DateTime UtcNow { get; } = utcNow ?? DateTime.UtcNow;
+
     private static readonly Regex HasOffset = new(@"(?:T|\s)\d{1,2}:\d{2}.*(?:Z|[+-]\d{2}:?\d{2})$",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 

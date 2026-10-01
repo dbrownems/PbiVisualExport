@@ -480,15 +480,32 @@ _sample/                                   upstream MS "Embed for your customers
       a hierarchy level resolves to the level's column. A multi-column filter that can't
       be translated **fails** the export. Verified against native on LargeExportReport
       (`table3` 70 rows, Page4).
+    - **Relative date/time filters** (`filterType 4` date, `7` time; operator and unit
+      as numbers or names) → `FILTER(ALL(col), col >= start && col < end)` over a
+      half-open **UTC** window computed from the builder's `TimeProvider` (injected;
+      `TimeProvider.System` by default) when the query is built. Dates: `today` = the
+      UTC date; rolling Last N ends at `today+1` (`includeToday`, default true) or
+      `today`; rolling Next N starts at `today` or `today+1`; This = the current
+      day/week (Sunday start)/month/year; calendar Last N = the N periods before the
+      current one, calendar Next N = the N after it; month arithmetic clamps month
+      ends. Times (Minutes/Hours only): anchor = UTC now truncated to the minute; Last
+      N = `[anchor−N, anchor)`, Next N = `[anchor, anchor+N)`, This Hour = the current
+      hour. A non-DateTime column, an unknown operator/unit or a fractional count →
+      400; a relative filter on an M-parameter-bound column → 400. Approximations:
+      Power BI evaluates at the page's anchor time in the local date, so near midnight
+      or a period boundary the window can differ. Not in the golden files (the output
+      depends on the clock); tests `RelativeDateFilters_*`, `RelativeTimeFilters_*`.
+      Verified live on LargeExportReport `summary1` with In Last 12 Months against
+      native (40 rows, East/Accessories 517,704 vs ~12.2M unfiltered); the other
+      combinations are unit-tested only.
     - **Untranslatable filters fail the export** (400, `ExportRequestException`)
-      instead of being dropped, which would over-export: relative date/time with a
-      count (`filterType 4`/`7`, not translated yet), `#notSupported`, IncludeExclude
+      instead of being dropped, which would over-export: `#notSupported`, IncludeExclude
       with values, basic operators other than In/NotIn, unsupported advanced or value
-      conditions (e.g. `Between`), and value/Top N filters whose target or order can't
-      be resolved. Filters that select nothing are no-ops: `All`, empty values, no
-      conditions, a relative filter with a count of 0, Top N with count ≤ 0 or no
-      `orderBy`. Tests: `ColumnFiltersThatCantBeTranslated_FailTheExport`,
-      `FiltersThatSelectNothing_AreNoOps`.
+      conditions (e.g. `Between`), relative filters that can't be translated (above),
+      and value/Top N filters whose target or order can't be resolved. Filters that
+      select nothing are no-ops: `All`, empty values, no conditions, a relative filter
+      with a count missing or ≤ 0, Top N with count ≤ 0 or no `orderBy`. Tests:
+      `ColumnFiltersThatCantBeTranslated_FailTheExport`, `FiltersThatSelectNothing_AreNoOps`.
     - **Date/time values** in filters go through `ClientTime`: a value with an offset
       or `Z` is converted to the wall time in the request's `timeZone` (IANA; unknown
       zone → 400; absent → read as UTC), a value without one is used as written. Before
@@ -803,11 +820,10 @@ detailed here.
   `NotIn`/comparison filters on a bound column are refused (400), as native export
   refuses them.
 - **Hierarchy slicers, tuple filters and hierarchy levels** are supported (see
-  **Filters** and **Hierarchy levels** above). Filter translation doesn't handle
-  **relative date/time** filters (`filterType 4`/`7`) yet: like every filter it can't
-  translate, such a filter fails the export (400) rather than over-exporting. Applying
-  them (relative to today in the request's `timeZone`) is the remaining filter gap.
-  (Measure value filters and Top N are supported and verified
+  **Filters** and **Hierarchy levels** above). **Relative date/time** filters are
+  supported too, as UTC windows evaluated when the export runs (Power BI uses the
+  page's anchor time and the local date; only rolling Last N Months was verified
+  live). (Measure value filters and Top N are supported and verified
   against native export on StoreSales `table1`/`bar1`.) Native `exportData` fails
   ("Export visual data has failed") on `rmTable` (report measures), so its
   measure-filter results were checked against the unfiltered values instead.
