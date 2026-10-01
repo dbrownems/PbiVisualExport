@@ -481,6 +481,47 @@ public class DaxQueryBuilderTests
         Assert.Contains(message, Assert.Throws<ExportRequestException>(() => Build(r)).Message);
     }
 
+    [Theory]
+    [InlineData("""{"$schema":"http://powerbi.com/product/schema#relativeDate","target":{"table":"Sales","column":"Order Date"},"operator":0,"timeUnitsCount":3,"timeUnitType":3,"includeToday":true,"filterType":4}""", "relative date filter")]
+    [InlineData("""{"$schema":"http://powerbi.com/product/schema#relativeTime","target":{"table":"Sales","column":"Order Date"},"operator":0,"timeUnitsCount":2,"timeUnitType":1,"filterType":7}""", "relative time filter")]
+    [InlineData("""{"$schema":"http://powerbi.com/product/schema#advanced","target":{"table":"Sales","column":"Region"},"filterType":0,"logicalOperator":"And","conditions":[{"operator":"Is","value":"East"},{"operator":"Between","value":"W"}]}""", "the condition 'Between' isn't supported")]
+    [InlineData("""{"$schema":"http://powerbi.com/product/schema#advanced","target":{"table":"Sales","column":"Region"},"filterType":0,"logicalOperator":"Or","conditions":[{"operator":"Between","value":"W"},{"operator":"Is","value":"East"}]}""", "the condition 'Between' isn't supported")]
+    [InlineData("""{"$schema":"http://powerbi.com/product/schema#includeExclude","target":{"table":"Sales","column":"Region"},"filterType":3,"isExclude":true,"values":["East"]}""", "includes or excludes specific data points")]
+    [InlineData("""{"$schema":"http://powerbi.com/product/schema#basic","target":{"table":"Sales","column":"Region"},"filterType":1,"operator":"Contains","values":["E"]}""", "the operator 'Contains' isn't supported")]
+    [InlineData("""{"$schema":"http://powerbi.com/product/schema#notSupported","target":{"table":"Sales","column":"Region"},"filterType":2,"message":"x"}""", "doesn't expose to the API")]
+    [InlineData("""{"$schema":"http://powerbi.com/product/schema#topN",    "target":{"table":"Sales","column":"Region"},"filterType":5,"operator":"Top","itemCount":3,"orderBy":{"table":"Sales","column":"Amount"}}""", "The Top N filter on 'Sales'[Region]")]
+        [InlineData("""{"$schema":"http://powerbi.com/product/schema#advanced","target":{"table":"Sales","column":"Amount","aggregationFunction":"Sum"},"filterType":0,"logicalOperator":"And","conditions":[{"operator":"Between","value":"1"}]}""", "the condition 'Between' isn't supported")]
+    public void ColumnFiltersThatCantBeTranslated_FailTheExport(string filter, string message)
+    {
+        var r = Samples.Request(Samples.Column("Sales", "Region"), Samples.Measure("Sales", "Total"));
+        r.Filters.Add(Fixtures.Filter(filter));
+        var ex = Assert.Throws<ExportRequestException>(() => Build(r));
+        Assert.Contains(message, ex.Message);
+        Assert.Contains("Export aborted", ex.Message);
+    }
+
+    [Theory]
+    [InlineData("""{"$schema":"http://powerbi.com/product/schema#advanced","target":{"table":"Sales","column":"Region"},"filterType":0,"logicalOperator":"And","conditions":[{"operator":"None"}]}""")]
+    [InlineData("""{"$schema":"http://powerbi.com/product/schema#advanced","target":{"table":"Sales","column":"Region"},"filterType":0,"logicalOperator":"And","conditions":[]}""")]
+    [InlineData("""{"$schema":"http://powerbi.com/product/schema#basic","target":{"table":"Sales","column":"Region"},"filterType":1,"operator":"All","values":[]}""")]
+    [InlineData("""{"$schema":"http://powerbi.com/product/schema#basic","target":{"table":"Sales","column":"Region"},"filterType":1,"operator":"In","values":[]}""")]
+    [InlineData("""{"$schema":"http://powerbi.com/product/schema#relativeDate","target":{"table":"Sales","column":"Order Date"},"operator":0,"timeUnitType":3,"includeToday":true,"filterType":4}""")]
+    [InlineData("""{"$schema":"http://powerbi.com/product/schema#relativeDate","target":{"table":"Sales","column":"Order Date"},"operator":0,"timeUnitsCount":0,"timeUnitType":3,"filterType":4}""")]
+    [InlineData("""{"$schema":"http://powerbi.com/product/schema#includeExclude","target":{"table":"Sales","column":"Region"},"filterType":3,"isExclude":true,"values":[]}""")]
+    [InlineData("""{"$schema":"http://powerbi.com/product/schema#topN","target":{"table":"Sales","column":"Region"},"filterType":5,"operator":"Top","itemCount":0,"orderBy":{"table":"Sales","measure":"Total"}}""")]
+    [InlineData("""{"$schema":"http://powerbi.com/product/schema#advanced","target":{"table":"Sales","measure":"Total"},"filterType":0,"logicalOperator":"And","conditions":[]}""")]
+    public void FiltersThatSelectNothing_AreNoOps(string filter)
+    {
+        var r = Samples.Request(Samples.Column("Sales", "Region"), Samples.Measure("Sales", "Total"));
+        r.Filters.Add(Fixtures.Filter(filter));
+        var plan = Build(r);
+        var q = plan.BuildQuery();
+        Assert.DoesNotContain("VAR _f", q);
+        Assert.DoesNotContain("VAR _tn", q);
+        Assert.DoesNotContain("VAR _vf", q);
+        Assert.Empty(plan.Warnings);
+    }
+
     [Fact]
     public void MeasureFilters_ReuseVisualMeasures_AndAddFilterOnlyMeasures()
     {
@@ -499,15 +540,14 @@ public class DaxQueryBuilderTests
     }
 
     [Fact]
-    public void MeasureFilterWithAnUnsupportedCondition_IsIgnoredWithAWarning()
+    public void MeasureFilterWithAnUnsupportedCondition_FailsTheExport()
     {
         var r = Samples.Request(Samples.Column("Sales", "Region"), Samples.Measure("Sales", "Total"));
         r.Filters.Add(Fixtures.Filter(Advanced("""{"table":"Sales","measure":"Total"}""", "And",
             """[{"operator":"GreaterThan","value":1},{"operator":"Between","value":2}]""")));
-        var plan = Build(r);
-        Assert.Equal("Filter on [Total] uses unsupported condition 'Between'; filter ignored.", Assert.Single(plan.Warnings));
-        Assert.Empty(plan.MeasureFilters);
-        Assert.DoesNotContain("_vf", plan.BuildQuery());
+        var ex = Assert.Throws<ExportRequestException>(() => Build(r));
+        Assert.Contains("[Total]", ex.Message);
+        Assert.Contains("the condition 'Between' isn't supported", ex.Message);
     }
 
     [Fact]

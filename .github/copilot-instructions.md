@@ -480,9 +480,15 @@ _sample/                                   upstream MS "Embed for your customers
       a hierarchy level resolves to the level's column. A multi-column filter that can't
       be translated **fails** the export. Verified against native on LargeExportReport
       (`table3` 70 rows, Page4).
-    - **Not translated**: relative date/time filters (`filterType 4`/`7`) are dropped
-      without a warning, and an unsupported advanced condition is dropped from a
-      column filter — both can over-export (backlog).
+    - **Untranslatable filters fail the export** (400, `ExportRequestException`)
+      instead of being dropped, which would over-export: relative date/time with a
+      count (`filterType 4`/`7`, not translated yet), `#notSupported`, IncludeExclude
+      with values, basic operators other than In/NotIn, unsupported advanced or value
+      conditions (e.g. `Between`), and value/Top N filters whose target or order can't
+      be resolved. Filters that select nothing are no-ops: `All`, empty values, no
+      conditions, a relative filter with a count of 0, Top N with count ≤ 0 or no
+      `orderBy`. Tests: `ColumnFiltersThatCantBeTranslated_FailTheExport`,
+      `FiltersThatSelectNothing_AreNoOps`.
     - **Date/time values** in filters go through `ClientTime`: a value with an offset
       or `Z` is converted to the wall time in the request's `timeZone` (IANA; unknown
       zone → 400; absent → read as UTC), a value without one is used as written. Before
@@ -797,13 +803,11 @@ detailed here.
   `NotIn`/comparison filters on a bound column are refused (400), as native export
   refuses them.
 - **Hierarchy slicers, tuple filters and hierarchy levels** are supported (see
-  **Filters** and **Hierarchy levels** above). Filter translation still doesn't
-  handle **relative date/time** filters (`filterType 4`/`7`): `TranslateColumnFilter`
-  returns null and the filter is dropped **without a warning**, so the export can
-  include rows the visual excludes. An unsupported advanced condition is likewise
-  dropped from a column filter (a measure value filter or Top N that can't be built is
-  skipped with a warning). Making these fail the export, as multi-column filters do,
-  is the next safety fix. (Measure value filters and Top N are supported and verified
+  **Filters** and **Hierarchy levels** above). Filter translation doesn't handle
+  **relative date/time** filters (`filterType 4`/`7`) yet: like every filter it can't
+  translate, such a filter fails the export (400) rather than over-exporting. Applying
+  them (relative to today in the request's `timeZone`) is the remaining filter gap.
+  (Measure value filters and Top N are supported and verified
   against native export on StoreSales `table1`/`bar1`.) Native `exportData` fails
   ("Export visual data has failed") on `rmTable` (report measures), so its
   measure-filter results were checked against the unfiltered values instead.

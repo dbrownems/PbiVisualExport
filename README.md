@@ -364,6 +364,11 @@ silently truncated file.
     `DATE(…)` / `DATE(…) + TIME(…)`, like Power BI; M receives a datetime either way,
     so a model that needs a date should use `DateTime.Date(param)`.
   - field parameters (the visual's selected columns are exported)
+  - any filter the export can't translate stops it (400) rather than being dropped,
+    which would export rows the visual excludes: relative date/time filters, an
+    unsupported condition or operator (e.g. `Between`), and a value or Top N filter
+    whose target can't be resolved. Filters that select nothing ("All", no values, no
+    conditions) are ignored.
 - **Formatting**:
   - Formatted (default): the model's format strings, applied by the engine's
     `FORMAT()`. Numbers keep their thousands separators, unlike native export.
@@ -378,7 +383,7 @@ silently truncated file.
 
 | Gap | Effect |
 |---|---|
-| Relative date and relative time filters (`filterType` 4 and 7) | Not translated, so the export can include rows the visual excludes. |
+| Relative date and relative time filters (`filterType` 4 and 7) | Not translated yet, so a visual with one can't be exported: the export fails with a 400 instead of including rows the visual excludes. |
 | Cross-filtering or highlighting from a selection in another visual | Not captured. The client reads filters and slicer state only. |
 | Filters on a column bound to a dynamic M query parameter | `NotIn` and comparison filters, and several values for a single-value parameter, are rejected (400); Power BI can't export these selections either. "Select all" on a binding without a `selectAllValue` is rejected (400). A parameter-bound slicer has no "all except" state: unchecking a value after "Select all" clears the selection. |
 | No explicit sort | Power BI's implicit order is approximated: group-by columns ascending. |

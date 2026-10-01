@@ -365,7 +365,7 @@ internal sealed class DaxQueryBuilder
             throw new ExportRequestException("The visual has no exportable columns or measures (all fields are hidden on the visual).");
 
         var extraGroupBy = GroupByKeyColumns(request, model, dims);
-        var filters = BuildFilters(request.Filters, model, measures, name => UseReportMeasure(name) is not null, warnings,
+        var filters = BuildFilters(request.Filters, model, measures, name => UseReportMeasure(name) is not null,
             new ClientTime(request.TimeZone));
 
         List<SortKey> sortKeys;
@@ -556,12 +556,12 @@ internal sealed class DaxQueryBuilder
     /// (visual-level value filters such as "Total Sales is greater than 1000") and Top N
     /// filters are evaluated as Power BI does (see <see cref="FilterSet"/>). A filter on a
     /// column bound to a dynamic M query parameter also sets the parameter (<c>MPARAMETER</c>).
-    /// Single-column filters that fail to translate are skipped with a warning; a filter
-    /// measure or hierarchy level that doesn't exist, or a multi-column filter that can't be
-    /// translated, fails the export rather than export rows the visual excludes.
+    /// Any filter that can't be translated (a relative date/time filter, an unsupported
+    /// condition, a filter measure or hierarchy level that doesn't exist...) fails the export
+    /// rather than export rows the visual excludes.
     /// </summary>
     private static FilterSet BuildFilters(IEnumerable<JsonElement> filters, TOM.Model model, List<MeasureField> measures,
-        Func<string, bool> isReportMeasure, List<string> warnings, ClientTime time)
+        Func<string, bool> isReportMeasure, ClientTime time)
     {
         var set = new FilterSet();
         var bindings = ParameterBindings(model);
@@ -587,8 +587,8 @@ internal sealed class DaxQueryBuilder
             if (target.ValueKind != JsonValueKind.Object) continue;
             try
             {
-                if (IsTopN(filter)) AddTopN(filter, target, model, isReportMeasure, set, warnings);
-                else if (IsMeasureTarget(target)) AddValueFilter(filter, target, model, measures, isReportMeasure, set, warnings, time);
+                if (IsTopN(filter)) AddTopN(filter, target, model, isReportMeasure, set);
+                else if (IsMeasureTarget(target)) AddValueFilter(filter, target, model, measures, isReportMeasure, set, time);
                 else if (ResolveTargetColumn(target, model) is { } column)
                 {
                     // A filter on a dynamic M parameter's bound column also sets the parameter;
@@ -601,7 +601,7 @@ internal sealed class DaxQueryBuilder
             catch (ExportRequestException) { throw; }
             catch (Exception ex)
             {
-                warnings.Add($"Filter on {TargetLabel(target)} could not be translated ({ex.Message}); ignored.");
+                throw Untranslatable(target, ex.Message);
             }
         }
 
@@ -810,12 +810,12 @@ internal sealed class DaxQueryBuilder
     /// the visual shows reuses its [m_i] column; any other is a filter-only [vf_i] column.
     /// </summary>
     private static void AddValueFilter(JsonElement filter, JsonElement target, TOM.Model model, List<MeasureField> measures,
-        Func<string, bool> isReportMeasure, FilterSet set, List<string> warnings, ClientTime time)
+        Func<string, bool> isReportMeasure, FilterSet set, ClientTime time)
     {
         string Literal(JsonElement v) => MeasureLiteral(v, time);
         if (!HasConditions(filter)) return; // a filter card with nothing set
-        var expr = MeasureTargetExpression(target, model, isReportMeasure);
-        if (expr is null) { warnings.Add($"Filter on {TargetLabel(target)} is not supported; ignored."); return; }
+        var expr = MeasureTargetExpression(target, model, isReportMeasure)
+            ?? throw Untranslatable(target, "its target isn't a measure or an aggregation of a column");
 
         var mi = measures.FindIndex(m => string.Equals(m.Expression, expr, StringComparison.OrdinalIgnoreCase));
         var vi = set.ValueMeasures.FindIndex(e => string.Equals(e, expr, StringComparison.OrdinalIgnoreCase));
@@ -828,12 +828,8 @@ internal sealed class DaxQueryBuilder
         {
             if (Eq(Str(cond, "operator"), "None")) continue;
             var p = TranslateCondition(cond, colRef, Literal);
-            if (p is null)
-            {
-                // Dropping one condition would change the rows either way (And: more, Or: fewer).
-                warnings.Add($"Filter on {TargetLabel(target)} uses unsupported condition '{Str(cond, "operator")}'; filter ignored.");
-                return;
-            }
+            // Dropping one condition would change the rows either way (And: more, Or: fewer).
+            if (p is null) throw UnsupportedCondition(target, cond);
             preds.Add(p);
             labels.Add(TranslateCondition(cond, expr, Literal)!);
         }
@@ -846,7 +842,7 @@ internal sealed class DaxQueryBuilder
 
     /// <summary>Top/Bottom N values of a column by a measure, ranked under the column filters.</summary>
     private static void AddTopN(JsonElement filter, JsonElement target, TOM.Model model, Func<string, bool> isReportMeasure,
-        FilterSet set, List<string> warnings)
+        FilterSet set)
     {
         var count = TopNCount(filter);
         if (count <= 0 || !filter.TryGetProperty("orderBy", out var orderBy) || orderBy.ValueKind != JsonValueKind.Object)
@@ -854,15 +850,31 @@ internal sealed class DaxQueryBuilder
         var order = MeasureTargetExpression(orderBy, model, isReportMeasure);
         var column = IsMeasureTarget(target) ? null : ResolveTargetColumn(target, model);
         if (column is null || order is null)
-        {
-            warnings.Add($"Top N filter on {TargetLabel(target)} by {TargetLabel(orderBy)} is not supported; ignored.");
-            return;
-        }
+            throw new ExportRequestException(
+                $"The Top N filter on {TargetLabel(target)} by {TargetLabel(orderBy)} could not be translated. " +
+                "Export aborted rather than export rows the visual excludes.");
         var bottom = Eq(Str(filter, "operator"), "Bottom");
         var colRef = column.Ref;
         set.TopN.Add(new TopNFilter(colRef, count, bottom, order));
         set.Descriptions.Add($"{(bottom ? "Bottom" : "Top")} {count} {colRef} by {order}");
     }
+
+    private static ExportRequestException Untranslatable(JsonElement target, string reason) =>
+        new($"The filter on {TargetLabel(target)} could not be translated ({reason}). " +
+            "Export aborted rather than export rows the visual excludes.");
+
+    private static ExportRequestException UnsupportedCondition(JsonElement target, JsonElement cond) =>
+        Untranslatable(target, $"the condition '{CondOperator(cond) ?? "?"}' isn't supported");
+
+    /// <summary>A condition's operator, string or numeric.</summary>
+    private static string? CondOperator(JsonElement cond)
+        => cond.ValueKind == JsonValueKind.Object && cond.TryGetProperty("operator", out var v)
+            ? v.ValueKind switch { JsonValueKind.String => v.GetString(), JsonValueKind.Number => v.GetRawText(), _ => null }
+            : null;
+
+    /// <summary>The numeric filterType, or -1.</summary>
+    private static int FilterTypeOf(JsonElement filter)
+        => filter.TryGetProperty("filterType", out var t) && t.ValueKind == JsonValueKind.Number && t.TryGetInt32(out var n) ? n : -1;
 
     private static string TargetLabel(JsonElement target)
     {
@@ -960,42 +972,77 @@ internal sealed class DaxQueryBuilder
     {
         var colRef = column.Ref;
         var dataType = column.DataType;
+        var schema = Str(filter, "$schema") ?? "";
+        var filterType = FilterTypeOf(filter);
+        const string aborted = "Export aborted rather than export rows the visual excludes.";
 
-        var schema = filter.TryGetProperty("$schema", out var sEl) ? sEl.GetString() ?? "" : "";
+        // Relative date/time ("in the last 3 months"): not translated yet. One with a count is
+        // active, so dropping it would over-export.
+        var relativeDate = filterType == 4 || schema.Contains("relativeDate", StringComparison.OrdinalIgnoreCase);
+        if (relativeDate || filterType == 7 || schema.Contains("relativeTime", StringComparison.OrdinalIgnoreCase))
+        {
+            var active = filter.TryGetProperty("timeUnitsCount", out var countEl) && countEl.ValueKind == JsonValueKind.Number &&
+                countEl.TryGetDouble(out var count) && count > 0;
+            if (!active) return null;
+            throw new ExportRequestException(
+                $"The filter on {colRef} is a relative {(relativeDate ? "date" : "time")} filter (e.g. \"in the last 3 months\"), " +
+                $"which the export can't apply yet. {aborted}");
+        }
+
+        if (schema.EndsWith("#notSupported", StringComparison.OrdinalIgnoreCase))
+            throw new ExportRequestException($"The filter on {colRef} is a filter type Power BI doesn't expose to the API. {aborted}");
+
+        if (filterType == 3 || schema.Contains("includeExclude", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!NonEmptyArray(filter, "values")) return null;
+            throw new ExportRequestException(
+                $"The filter on {colRef} includes or excludes specific data points, which the export can't apply. {aborted}");
+        }
 
         // Basic filter: In / NotIn a set of values.
-        if (schema.Contains("basic", StringComparison.OrdinalIgnoreCase) ||
+        if (filterType == 1 || schema.Contains("basic", StringComparison.OrdinalIgnoreCase) ||
             (filter.TryGetProperty("operator", out _) && filter.TryGetProperty("values", out _)))
         {
-            var op = filter.TryGetProperty("operator", out var opEl) ? opEl.GetString() ?? "In" : "In";
+            var op = Str(filter, "operator") ?? "In";
             if (!filter.TryGetProperty("values", out var valuesEl) || valuesEl.ValueKind != JsonValueKind.Array)
                 return null;
+            if (Eq(op, "All")) return null; // "Select all" (or nothing selected): no restriction
             var literals = valuesEl.EnumerateArray().Select(v => DaxLiteral(dataType, v, time)).ToList();
             if (literals.Count == 0) return null;
             var set = "{" + string.Join(", ", literals) + "}";
-            return op.Equals("NotIn", StringComparison.OrdinalIgnoreCase)
-                ? $"FILTER(ALL({colRef}), NOT({colRef} IN {set}))"
-                : $"TREATAS({set}, {colRef})";
+            if (Eq(op, "NotIn")) return $"FILTER(ALL({colRef}), NOT({colRef} IN {set}))";
+            if (Eq(op, "In")) return $"TREATAS({set}, {colRef})";
+            throw new ExportRequestException(
+                $"The filter on {colRef} could not be translated (the operator '{op}' isn't supported). {aborted}");
         }
 
         // Advanced filter: And/Or of comparison conditions.
-        if (schema.Contains("advanced", StringComparison.OrdinalIgnoreCase) ||
+        if (filterType == 0 || schema.Contains("advanced", StringComparison.OrdinalIgnoreCase) ||
             filter.TryGetProperty("conditions", out _))
         {
             if (!filter.TryGetProperty("conditions", out var condsEl) || condsEl.ValueKind != JsonValueKind.Array)
                 return null;
-            var logical = filter.TryGetProperty("logicalOperator", out var lEl) ? lEl.GetString() ?? "And" : "And";
-            var joiner = logical.Equals("Or", StringComparison.OrdinalIgnoreCase) ? " || " : " && ";
+            var joiner = Eq(Str(filter, "logicalOperator"), "Or") ? " || " : " && ";
             var preds = new List<string>();
             foreach (var cond in condsEl.EnumerateArray())
             {
-                var p = TranslateCondition(cond, colRef, v => DaxLiteral(dataType, v, time));
-                if (p is not null) preds.Add(p);
+                if (Eq(Str(cond, "operator"), "None")) continue;
+                // Dropping one condition would change the rows either way (And: more, Or: fewer).
+                var p = TranslateCondition(cond, colRef, v => DaxLiteral(dataType, v, time))
+                    ?? throw new ExportRequestException(
+                        $"The filter on {colRef} could not be translated (the condition '{CondOperator(cond) ?? "?"}' isn't supported). {aborted}");
+                preds.Add(p);
             }
             if (preds.Count == 0) return null;
             return $"FILTER(ALL({colRef}), {string.Join(joiner, preds)})";
         }
 
+        // Any other filter that selects something (identity, hierarchy...) can't be dropped.
+        if (NonEmptyArray(filter, "values") || NonEmptyArray(filter, "conditions") ||
+            NonEmptyArray(filter, "identityValues") || NonEmptyArray(filter, "hierarchyData"))
+            throw new ExportRequestException(
+                $"The filter on {colRef} (filter type {(filterType >= 0 ? filterType.ToString(CultureInfo.InvariantCulture) : schema)}) " +
+                $"could not be translated. {aborted}");
         return null;
     }
 
@@ -1167,7 +1214,7 @@ internal sealed class DaxQueryBuilder
 
     private static string? TranslateCondition(JsonElement cond, string colRef, Func<JsonElement, string> literal)
     {
-        var op = cond.TryGetProperty("operator", out var opEl) ? opEl.GetString() : null;
+        var op = Str(cond, "operator");
         if (op is null) return null;
         var hasValue = cond.TryGetProperty("value", out var valEl);
         var lit = hasValue ? literal(valEl) : null;
