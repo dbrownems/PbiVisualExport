@@ -48,7 +48,7 @@ library and served at `{prefix}/client.js`). The sample host shows the wiring.
 - `PbiVisualExport.sln` — library + sample + tests.
 - `src/PbiVisualExport/` — the library (net8.0 + net10.0): DI/endpoint extensions,
   options, `Extensibility.cs` seams, `Services/` (export pipeline; the core is
-  `DaxQueryBuilder.cs`), `Auth/` (token providers), `Client/` (**generated** JS
+  `DaxQueryBuilder*.cs` + `DaxPlan.cs`), `Auth/` (token providers), `Client/` (**generated** JS
   bundles; don't hand-edit).
 - `src/pbi-visual-export-js/` — the TypeScript client; `npm run build` writes `dist/`
   and the library's `Client/` bundles.

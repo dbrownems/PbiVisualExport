@@ -246,7 +246,11 @@ src/PbiVisualExport/                       the library (NuGet)
     PowerBiCatalog.cs                      cached workspace/report/dataset lookups (REST)
     CsvExportService.cs                    orchestrates: metadata → field validation → DAX → XMLA reader → CSV stream
     VisualFieldValidator.cs                FieldValidation: request fields ⊆ the visual's saved PBIR fields
-    DaxQueryBuilder.cs                     VisualExportRequest + TOM (+ report measures) → single DAX query (DaxPlan)
+    DaxQueryBuilder.cs                     VisualExportRequest + TOM (+ report measures) → single DAX query: Build, fields, sort
+    DaxQueryBuilder.Filters.cs             filter translation (column, Top N, value, multi-column, relative date, M parameters)
+    DaxQueryBuilder.Literals.cs            DAX literals, identifier quoting, model lookups
+    DaxPlan.cs                             the plan the builder returns (DaxPlan, output columns, sort keys, filters)
+    ClientTime.cs                          converts filter date-times to the browser's wall time
     FabricDefinitionClient.cs              Fabric getDefinition POST + 202/LRO poll → decoded parts
     SemanticModelMetadataService.cs        semantic model getDefinition(TMSL) → TOM
     ReportDefinitionService.cs             report getDefinition → ReportDefinition (format, parts, report measures)
@@ -768,7 +772,7 @@ both together, and bump the version on a breaking wire change.
 |---|---|
 | How fields/filters/sort are gathered in the browser | `src/pbi-visual-export-js/src/gather.ts` (then `npm run build`, commit the bundles) |
 | Browser transfer (Save As / ticket download), client API | `src/pbi-visual-export-js/src/transfer.ts`, `index.ts`, `types.ts` |
-| The generated DAX (grouping, format strings, filters) | `Services/DaxQueryBuilder.cs` (+ `Golden/*.dax`, `UPDATE_GOLDEN=1`) |
+| The generated DAX (grouping, format strings, filters) | `Services/DaxQueryBuilder.cs`, `.Filters.cs`, `.Literals.cs`, `DaxPlan.cs` (+ `Golden/*.dax`, `UPDATE_GOLDEN=1`) |
 | CSV shape / streaming / row caps / raw value text | `Services/CsvExportService.cs` (+ `PbiVisualExportOptions.cs` `Export`) |
 | Endpoints, status codes, tickets, audit | `ExportEndpoints.cs`, `Services/ExportHandler.cs`, `Services/DownloadTickets.cs` |
 | Request validation (IDs ↔ names, allow-list, authorizer) | `Services/ExportRequestResolver.cs`, `Services/PowerBiCatalog.cs` |
