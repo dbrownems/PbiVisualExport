@@ -89,7 +89,16 @@ if($ItemId){
 $target = if($ItemId){ "$Kind/$ItemId in workspace $Workspace" } else { "new $Kind '$DisplayName' in workspace $Workspace" }
 if(-not $PSCmdlet.ShouldProcess($target, $(if($ItemId){ "updateDefinition" } else { "createItemWithDefinition" }))){ return }
 try {
-  $resp = Invoke-WebRequest -Method Post -Uri $uri -Headers $H -Body $body
+  # Fabric occasionally returns a transient 500 (seen right after reseeding the Warehouse); retry 5xx/429.
+  for($attempt = 1; ; $attempt++){
+    try { $resp = Invoke-WebRequest -Method Post -Uri $uri -Headers $H -Body $body -UseBasicParsing; break }
+    catch {
+      $code = if($_.Exception.Response){ [int]$_.Exception.Response.StatusCode } else { 0 }
+      if($attempt -ge 3 -or -not ($code -ge 500 -or $code -eq 429)){ throw }
+      Write-Warning "POST returned HTTP $code (attempt $attempt of 3); retrying in $(10 * $attempt) s."
+      Start-Sleep -Seconds (10 * $attempt)
+    }
+  }
   "POST status: $($resp.StatusCode)"
   if($resp.StatusCode -eq 201){
     ($resp.Content | ConvertFrom-Json) | Select-Object id,displayName | Format-List
@@ -102,9 +111,13 @@ try {
     if($s.status -eq "Succeeded" -and -not $ItemId){
       $r = Invoke-RestMethod -Uri "https://api.fabric.microsoft.com/v1/operations/$op/result" -Headers @{Authorization="Bearer $tok"}
       $r | Select-Object id,displayName | Format-List
-    } elseif($s.status -ne "Succeeded") { $s | ConvertTo-Json -Depth 8 }
+    } elseif($s.status -ne "Succeeded") {
+      $s | ConvertTo-Json -Depth 8
+      throw "Deploy operation $op ended with status '$($s.status)'."
+    }
   }
 } catch {
   "ERR: $($_.Exception.Message)"
   $_.ErrorDetails.Message
+  throw
 }
