@@ -41,7 +41,8 @@
         errorEl.innerHTML = "<strong>Error:</strong><br/>" + escapeHtml(text).split("\n").join("<br/>");
     }
 
-    // Filters the server couldn't translate (e.g. hierarchy slicers) - the export ignored them.
+    // Warnings from prepare (e.g. a sort key outside the visual, skipped). A filter the server
+    // can't translate fails the export instead of showing up here.
     function showWarnings(result) {
         const warnings = result && result.prepared && result.prepared.warnings;
         if (!warnings || !warnings.length) return;

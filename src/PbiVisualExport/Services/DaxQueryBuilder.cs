@@ -564,7 +564,8 @@ internal sealed class DaxQueryBuilder
     /// filters are evaluated as Power BI does (see <see cref="FilterSet"/>). A filter on a
     /// column bound to a dynamic M query parameter also sets the parameter (<c>MPARAMETER</c>).
     /// Relative date/time filters ("in the last 3 months") become a date window computed from
-    /// the UTC clock, as published reports evaluate them. Any filter that can't be translated
+    /// the UTC clock at export time (an approximation: the report's own anchor time and local
+    /// date aren't reproduced). Any filter that can't be translated
     /// (an unsupported condition, a filter measure or hierarchy level that doesn't exist...)
     /// fails the export rather than export rows the visual excludes.
     /// </summary>
@@ -794,7 +795,8 @@ internal sealed class DaxQueryBuilder
 
     /// <summary>
     /// The half-open <c>[start, end)</c> window of a relative date or time filter, from the UTC
-    /// clock, as the Power BI service evaluates them. Weeks start on Sunday. Relative date:
+    /// clock at export time (an approximation of the report's own evaluation, which uses its
+    /// anchor time and local date). Weeks start on Sunday. Relative date:
     /// "last/next N days|weeks|months|years" are rolling periods ending (starting) today when
     /// <c>includeToday</c> (default true), else yesterday (tomorrow); calendar units are whole
     /// periods before, at or after the current one ("this" is always the calendar period).

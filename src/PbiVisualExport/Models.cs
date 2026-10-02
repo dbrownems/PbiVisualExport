@@ -31,9 +31,9 @@ public sealed class ExportField
     public string? Role { get; set; }
 
     /// <summary>
-    /// Optional column header override. Set when a field is synthesized server-side
-    /// (e.g. a field parameter expanded to its underlying column) so the CSV keeps
-    /// the friendly label the user saw in the visual.
+    /// Optional server-side column header override. Set today for a resolved hierarchy
+    /// level, which is headed by the level name. (A field parameter's label isn't exposed
+    /// by the SDK, so such columns keep the column name: a known gap.)
     /// </summary>
     public string? Header { get; set; }
 
