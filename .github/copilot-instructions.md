@@ -359,8 +359,10 @@ _sample/                                   upstream MS "Embed for your customers
     `filename=` + UTF-8 `filename*`; Kestrel rejects raw non-ASCII header values),
     `Cache-Control: no-store`, `nosniff`, and `CsvExportService.ExportAsync` straight
     into `Response.Body`. Errors before the first byte → clean JSON 400/403/503/500
-    (`Response.Clear()`); errors mid-stream rethrow and **abort the connection**
-    (never a silently truncated file). Once the lease is acquired, every stream
+    (`Response.Clear()`), including failures in the resolver and the
+    `IEffectiveIdentityProvider` (`prepare` and `bench` also turn unexpected errors
+    into a JSON 500); errors mid-stream rethrow and **abort the connection**
+    (never a silently truncated file); cancellation is never translated. Once the lease is acquired, every stream
     (`csv`, or `download` with a valid ticket) ends with one audit record —
     completed, failed or canceled — to all `IExportAuditSink`s (sink failures are
     logged and ignored). A 429, an invalid ticket and `prepare` aren't audited.

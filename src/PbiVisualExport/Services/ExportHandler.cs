@@ -17,8 +17,11 @@ namespace PbiVisualExport.Services;
 /// expired or used ticket, 415 not JSON, 429 too many concurrent exports, 503
 /// <c>{ signInRequired, verificationUri, userCode }</c> when the XMLA device-code sign-in
 /// (development) is pending, 500 otherwise.
-/// A failure after the CSV has started streaming aborts the connection, so the client sees
-/// a failed download rather than a silently truncated file.
+/// Every failure before the first CSV byte (including the request resolver and the
+/// <see cref="IEffectiveIdentityProvider"/>) becomes one of those JSON responses, on every
+/// endpoint. A failure after the CSV has started streaming aborts the connection, so the
+/// client sees a failed download rather than a silently truncated file. Cancellation by the
+/// client is never translated.
 /// </summary>
 internal sealed class ExportHandler
 {
@@ -77,8 +80,8 @@ internal sealed class ExportHandler
             return;
         }
         var (userKey, userName) = UserOf(http);
-        var identity = await GetIdentityAsync(context, http.RequestAborted);
-        await StreamAsync(http, ExportTarget.From(context), identity, userKey, userName, "csv", BuildFileName(context.Request.VisualTitle), ticket: null);
+        await StreamAsync(http, ExportTarget.From(context), ct => GetIdentityAsync(context, ct), userKey, userName, "csv",
+            BuildFileName(context.Request.VisualTitle), ticket: null);
     }
 
     /// <summary>
@@ -160,7 +163,8 @@ internal sealed class ExportHandler
             await Error(StatusCodes.Status404NotFound, "This download link has already been used. Export the visual again.").ExecuteAsync(http);
             return;
         }
-        await StreamAsync(http, ticket.Target, ticket.Identity, ticket.UserKey ?? callerKey, ticket.UserName, "download", ticket.FileName, ticket);
+        await StreamAsync(http, ticket.Target, _ => Task.FromResult(ticket.Identity), ticket.UserKey ?? callerKey, ticket.UserName,
+            "download", ticket.FileName, ticket);
     }
 
     /// <summary><c>GET download/{ticket}/status</c>: <c>{ state, rows, error, fileName }</c>.</summary>
@@ -215,10 +219,19 @@ internal sealed class ExportHandler
         {
             return SignInRequired(ex);
         }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogError(ex, "Benchmark failed");
+            return Error(StatusCodes.Status500InternalServerError, "Export failed: " + ex.Message);
+        }
     }
 
-    private async Task StreamAsync(HttpContext http, ExportTarget target, EffectiveIdentity? identity, string userKey, string? userName,
-        string channel, string fileName, DownloadTicket? ticket)
+    /// <summary>
+    /// Streams the CSV. <paramref name="resolveIdentity"/> runs inside the error boundary, so an
+    /// identity-provider failure is reported (and audited) like any other pre-stream failure.
+    /// </summary>
+    private async Task StreamAsync(HttpContext http, ExportTarget target, Func<CancellationToken, Task<EffectiveIdentity?>> resolveIdentity,
+        string userKey, string? userName, string channel, string fileName, DownloadTicket? ticket)
     {
         var response = http.Response;
         var ct = http.RequestAborted;
@@ -235,8 +248,10 @@ internal sealed class ExportHandler
         long streamed = 0;
         var outcome = VisualExportOutcome.Failed;
         string? failure = null;
+        EffectiveIdentity? identity = null;
         try
         {
+            identity = await resolveIdentity(ct);
             response.ContentType = "text/csv; charset=utf-8";
             var disposition = new ContentDispositionHeaderValue("attachment");
             disposition.SetHttpFileName(fileName); // ASCII filename= plus UTF-8 filename*=

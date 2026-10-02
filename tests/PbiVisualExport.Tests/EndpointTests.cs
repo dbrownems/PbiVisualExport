@@ -36,6 +36,13 @@ public sealed class EndpointTests : IAsyncLifetime
         File.WriteAllText(Path.Combine(_cacheDirectory, $"{Fixtures.ReportId:N}.report.json"),
             Fixtures.Snapshot(Fixtures.ReportParts(Report)));
 
+        _app = await StartHostAsync();
+        _client = _app.GetTestClient();
+    }
+
+    private async Task<WebApplication> StartHostAsync(
+        Action<PbiVisualExportOptions>? options = null, Action<PbiVisualExportBuilder>? configure = null)
+    {
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions
         {
             EnvironmentName = Environments.Production,
@@ -46,21 +53,23 @@ public sealed class EndpointTests : IAsyncLifetime
         builder.Services.AddSingleton<IPowerBiCatalog>(new StubCatalog(StubCatalog.Workspace(Fixtures.WorkspaceId, "Workspace",
             new[] { (Fixtures.DatasetId, "Dataset") }, new CatalogReport(Fixtures.ReportId, Report, Fixtures.DatasetId, "https://embed"))));
         builder.Services.AddAuthentication(TestAuth.Name).AddScheme<AuthenticationSchemeOptions, TestAuth>(TestAuth.Name, null);
-        builder.Services.AddPbiVisualExport(o =>
+        var export = builder.Services.AddPbiVisualExport(o =>
         {
             o.AllowedWorkspaceIds.Add(Fixtures.WorkspaceId);
             o.MetadataCache.DiskCacheDirectory = _cacheDirectory;
             o.MetadataCache.TtlMinutes = 0;
             o.MetadataCache.RefreshOnMissSeconds = 0;
+            options?.Invoke(o);
         }).UseCredential(new FakeCredential());
+        configure?.Invoke(export);
 
-        _app = builder.Build();
-        _app.UseRouting();
-        _app.UseAuthentication();
-        _app.UseAuthorization();
-        _app.MapPbiVisualExport("/pbi-export");
-        await _app.StartAsync();
-        _client = _app.GetTestClient();
+        var app = builder.Build();
+        app.UseRouting();
+        app.UseAuthentication();
+        app.UseAuthorization();
+        app.MapPbiVisualExport("/pbi-export");
+        await app.StartAsync();
+        return app;
     }
 
     public async Task DisposeAsync()
@@ -126,6 +135,23 @@ public sealed class EndpointTests : IAsyncLifetime
     {
         var response = await _client.SendAsync(Post("/pbi-export/prepare", Summary1(), user: null));
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Theory]
+    [InlineData("csv")]
+    [InlineData("prepare")]
+    [InlineData("bench")]
+    public async Task IdentityProviderFailure_IsJson500(string endpoint)
+    {
+        await using var app = await StartHostAsync(
+            o => o.Export.EnableBenchmark = true,
+            b => b.AddEffectiveIdentity<ThrowingIdentityProvider>());
+        using var client = app.GetTestClient();
+
+        var response = await client.SendAsync(Post("/pbi-export/" + endpoint, Summary1()));
+
+        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
+        Assert.Contains("identity boom", (await Json(response)).GetProperty("error").GetString());
     }
 
     [Fact]

@@ -66,6 +66,12 @@ internal sealed class DelegateAuthorizer(Func<VisualExportContext, VisualExportA
     }
 }
 
+internal sealed class ThrowingIdentityProvider : IEffectiveIdentityProvider
+{
+    public ValueTask<EffectiveIdentity?> GetEffectiveIdentityAsync(VisualExportContext context, CancellationToken cancellationToken) =>
+        throw new InvalidOperationException("identity boom");
+}
+
 /// <summary>Small in-code models and report definitions for targeted tests.</summary>
 internal static class Samples
 {
