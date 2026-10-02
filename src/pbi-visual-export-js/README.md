@@ -102,7 +102,7 @@ the report's iframe, which gives the page no gesture, so menu commands always us
 | `listVisuals()` | Exportable visuals on the visible pages. Text boxes, images, shapes, buttons, cards, bookmark navigators and filter visuals are skipped. |
 | `getVisual(pageName, visualName)` | Finds a visual by page name and visual name. |
 | `buildRequest(visual, options)` | The request `exportVisual` would send, without sending it (for previews and debugging). |
-| `exportVisual(visual, options)` | Exports the visual. Resolves with `{ status, method, fileName, rows, bytes, elapsedMs, request, prepared }`. |
+| `exportVisual(visual, options)` | Exports the visual. Resolves with an `ExportResult` (see below). |
 | `addVisualMenuCommand(options)` | Adds the visual-menu command and handles its clicks. Returns a function that removes it. This **replaces** the report's `settings.extensions`. |
 | `visualMenuCommand(options)` / `handleCommand(event, options)` | Use these instead if you build `settings.extensions` yourself. |
 | `getSignInStatus()` / `waitForSignIn()` | For dev XMLA device-code sign-in (see below). |
@@ -122,18 +122,27 @@ the report's iframe, which gives the page no gesture, so menu commands always us
 | `fileName` | The name suggested in the Save As dialog. |
 | `onRequest` | Called with the request just before it's sent. |
 
+The `ExportResult` fields depend on how the file was transferred:
+
+| `status` / `method` | Fields |
+|---|---|
+| `cancelled` (Save As dismissed) | `status`, `elapsedMs` |
+| `completed` / `file` | `status`, `method`, `fileName`, `bytes`, `elapsedMs`, `request` (no `rows`) |
+| `completed` / `download` | `status`, `method`, `fileName`, `rows`, `elapsedMs`, `request`, `prepared` (no `bytes`). `completed` means the server finished streaming; the browser's download manager writes the file. |
+
 ### Errors
 
 Failures reject with a `PbiExportError`, which has a `code`:
 
 | `code` | Meaning |
 |---|---|
-| `http` | The server refused. See `status` (400 bad request, 403 not allowed, 429 too many exports) and `problems`. |
+| `http` | The server refused. See `status` (400 bad request, 403 not allowed, 429 too many exports). `problems` lists the details, only for request-validation 400s. |
+| `downloadFailed` | The transfer failed or stopped part way. A partial file may remain: a Save As file is removed only if it's still empty. |
 | `signInRequired` | Dev only: the server needs an XMLA device-code sign-in. Show `signIn.verificationUri` and `signIn.userCode`, `await exporter.waitForSignIn()`, then retry. |
 | `slicerUnreadable` | A slicer's selection (or the page's list of visuals, needed to find its slicers) couldn't be read. The client stops rather than export too many rows. |
 | `filtersUnreadable` | The report, page or visual filters couldn't be read, from the SDK or from the bookmark. The client stops rather than export too many rows. |
 | `authoringApiMissing` | `powerbi-report-authoring` isn't loaded. |
-| `noFields`, `missingIds`, `pickerUnavailable`, `network`, `downloadFailed`, `aborted` | See `src/errors.ts`. |
+| `noFields`, `missingIds`, `pickerUnavailable`, `network`, `aborted` | See `src/errors.ts`. |
 
 ## What's gathered
 

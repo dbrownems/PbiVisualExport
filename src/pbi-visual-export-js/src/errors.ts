@@ -15,11 +15,11 @@ export type PbiExportErrorCode =
     | "missingIds"
     /** `target: "file"` but the Save As dialog is unavailable. */
     | "pickerUnavailable"
-    /** The server rejected the request (see `status` and `problems`). */
+    /** The server rejected the request (see `status`; `problems` only on request-validation 400s). */
     | "http"
     /** The server couldn't be reached. */
     | "network"
-    /** The transfer stopped part way; nothing was saved. */
+    /** The transfer failed or stopped part way. A partial file may remain (a Save As file is removed only if still empty). */
     | "downloadFailed"
     /** Cancelled through the `signal`. */
     | "aborted";
@@ -28,7 +28,7 @@ export class PbiExportError extends Error {
     readonly code: PbiExportErrorCode;
     /** HTTP status, for `http` errors. */
     readonly status?: number;
-    /** Details from the server (e.g. why a request isn't allowed). */
+    /** The server's list of request problems, sent only with request-validation 400s. */
     readonly problems?: string[];
     /** For `signInRequired`. */
     readonly signIn?: XmlaSignInInfo;

@@ -10,8 +10,9 @@ namespace PbiVisualExport.Services;
 /// PBIR-Legacy reports), caches it in <see cref="MetadataCache"/> (kind <c>report</c>)
 /// and parses its report-level measures from <c>definition/reportExtensions.json</c>.
 ///
-/// Only loaded when a visual references a field the semantic model doesn't have, so
-/// exports that only use model fields never download the report.
+/// Loaded for field validation (<c>Export:FieldValidation</c> Strict or PbirOnly, the
+/// default) and, with validation Off, only when a visual references a measure the
+/// semantic model doesn't have.
 /// </summary>
 internal sealed class ReportDefinitionService
 {

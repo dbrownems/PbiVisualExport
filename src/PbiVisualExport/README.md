@@ -18,7 +18,7 @@ builder.Services.AddPbiVisualExport(builder.Configuration.GetSection("PbiVisualE
     .UseCredential(credential)                   // optional: the host's TokenCredential (else config)
     .AddAuthorizer<MyExportAuthorizer>()         // optional: who may export which report
     .AddEffectiveIdentity<MyRlsIdentity>()       // optional: run the query as the user (RLS)
-    .AddAuditSink<MyAuditSink>();                // optional: one record per export
+    .AddAuditSink<MyAuditSink>();                // optional: one record per csv/download stream
 
 app.UseAuthentication();
 app.UseAuthorization();

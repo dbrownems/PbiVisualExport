@@ -187,6 +187,11 @@ own credential, chosen by `PbiVisualExport:Credential:XmlaMode`:
 | `Shared` | Reuse the main (or host) credential — the **deployment** path. |
 | `DeviceCode` | Device-code sign-in with `Credential:XmlaClientId` (default `cf710c6e-dfcc-4fa8-a093-d47294e44c66`, the Analysis Services public client ADOMD.NET itself uses). |
 
+Precedence: a host `UseCredential(...)` always means `Shared` (XMLA uses the
+host's `xmla` credential, or its main one) and `XmlaMode` is ignored; otherwise an
+explicit `XmlaMode` wins; otherwise `Auto` applies. The REST, catalog and Fabric
+calls always use the main (or host) credential.
+
 Dev device-code flow is **non-blocking**: the first export (or `prepare`) returns
 **HTTP 503** `{ error, signInRequired: true, verificationUri, userCode }`; the JS
 client raises `PbiExportError` code `signInRequired`, the page shows the code and
@@ -355,14 +360,16 @@ _sample/                                   upstream MS "Embed for your customers
     `Cache-Control: no-store`, `nosniff`, and `CsvExportService.ExportAsync` straight
     into `Response.Body`. Errors before the first byte → clean JSON 400/403/503/500
     (`Response.Clear()`); errors mid-stream rethrow and **abort the connection**
-    (never a silently truncated file). Every stream ends with an audit record to all
-    `IExportAuditSink`s (failures logged and ignored).
+    (never a silently truncated file). Once the lease is acquired, every stream
+    (`csv`, or `download` with a valid ticket) ends with one audit record —
+    completed, failed or canceled — to all `IExportAuditSink`s (sink failures are
+    logged and ignored). A 429, an invalid ticket and `prepare` aren't audited.
   - User key: `user:{oid | objectidentifier | nameidentifier | sub | name}` claim,
     else `anon:{remote IP}`.
   - An `ExportRequestException` from planning (a field that's in neither the model
     nor the report's measures, a non-PBIR report with report measures, a visual with
     no exportable fields) → **400** `{error}`; field validation → **403**
-    `{error, problems}`.
+    `{error}`. Only the resolver's request-validation 400s add `problems` (a list).
 - **`ExportRequestResolver`**: `workspaceId` and `reportId` are required GUIDs.
   The workspace must be in `AllowedWorkspaceIds` (when non-empty) → else 403. The
   report is looked up in the workspace catalog (`PowerBiCatalog`, cached), which
@@ -588,8 +595,9 @@ _sample/                                   upstream MS "Embed for your customers
   1. `DaxQueryBuilder.FindUnresolvedFields(request, model)` lists fields, sort
      measures, **measures named by active value/Top N filters** and **columns of
      active column filters** that the (cached)
-     model lacks. None → build from the model alone; **the
-     report definition is never downloaded** for such visuals.
+     model lacks. None → build from the model alone. (With `FieldValidation=Off`
+     the report definition is then never downloaded; with `Strict`/`PbirOnly`, the
+     default, the cached definition is already loaded for field validation.)
   2. If any unresolved field is a **measure**, load the (cached) report definition
      and match it against the report's measures (case-insensitive; names are unique
      across model + report). Unknown columns never need the report.

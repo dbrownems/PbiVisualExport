@@ -26,6 +26,7 @@ flowchart LR
     M -->|"CSV stream<br/>(Save As file or download)"| B
 ```
 
+- [Before you start](#before-you-start)
 - [Try the sample](#try-the-sample)
 - [Add it to your app](#add-it-to-your-app)
 - [Security model](#security-model)
@@ -34,6 +35,30 @@ flowchart LR
 - [What gets exported](#what-gets-exported)
 - [Known gaps](#known-gaps)
 - [Development](#development)
+
+## Before you start
+
+Check these before you integrate. Each one is a hard requirement, and each fails in a
+different way if it's missing.
+
+| Requirement | Why | If it's missing |
+|---|---|---|
+| A **64-bit (x64)** .NET 8 or .NET 10 host process | ADOMD.NET and TOM ship x64-only. | The assemblies don't load. |
+| The workspace on **Premium or Fabric capacity**, with **XMLA read** enabled | Data is read over the workspace's XMLA endpoint. | The XMLA connection fails. |
+| The report and its semantic model in the **same workspace** | The server resolves the model from the report and reads both with one workspace's permissions. | 400. |
+| The report saved in **enhanced PBIR** format | With the default `Export:FieldValidation` (`Strict`), requested fields are checked against the visual's saved PBIR definition. PBIR is also where report-level measures live. | 403 for a PBIR-Legacy report. Set `FieldValidation` to `PbirOnly` to export legacy reports unchecked. |
+| The module's identity is **Contributor** (or higher) on the workspace | Fabric `getDefinition` needs read *and* write permission on the model and the report. | 403 from Fabric. |
+| For a service principal or managed identity: the tenant setting *Service principals can use Fabric APIs* | Fabric and XMLA both check it. It takes about 15 minutes to apply after a change. | `Unauthorized`. |
+
+Terms used below:
+
+- **PBIR**: Power BI's file format for a report definition (pages, visuals, fields).
+  *Enhanced* PBIR stores each visual as its own JSON part; PBIR-Legacy is the older
+  single `report.json`.
+- **TOM**: the Tabular Object Model, the .NET object model of a semantic model. The
+  server reads data types, format strings and M parameters from it.
+- **XMLA endpoint**: the Analysis Services protocol endpoint of a Premium or Fabric
+  workspace. It runs DAX queries with no row or size cap.
 
 ## Try the sample
 
@@ -94,23 +119,24 @@ app.MapPbiVisualExport("/pbi-export")                 // RequireAuthorization() 
   with the setting name to fix.
 - Use `AddPbiVisualExport(o => …)` to configure in code only.
 
-**Credential.** One identity does three things: Power BI REST lookups (workspace,
-report and dataset names), Fabric `getDefinition` (model and report metadata), and the
-XMLA connection (data). Supply it in one of two ways:
+**Credential.** The module calls three services: Power BI REST (workspace, report and
+dataset names), Fabric `getDefinition` (model and report metadata), and the XMLA
+endpoint (data). REST and Fabric always use the **main credential**. XMLA uses the
+main credential too, except in dev, because the XMLA endpoint rejects Azure CLI
+tokens. The first matching row decides:
 
-- `UseCredential(tokenCredential[, xmlaCredential])`: any Azure.Identity credential,
-  for example a managed identity or the service principal you already embed with.
-- `PbiVisualExport:Credential` in configuration: `ServicePrincipal` (deployed),
-  `MasterUser`, `DeviceCode`, or `AzureCli` (dev only). See the
-  [reference](#configuration-reference).
+| You configure | Main credential (REST, Fabric) | XMLA credential |
+|---|---|---|
+| `UseCredential(credential[, xmlaCredential])` in code | `credential` | `xmlaCredential`, else `credential` (`Credential:Mode`/`XmlaMode` are ignored) |
+| `Credential:XmlaMode` = `Shared` | from `Credential:Mode` | the main credential |
+| `Credential:XmlaMode` = `DeviceCode` | from `Credential:Mode` | a one-time device-code sign-in |
+| `Credential:XmlaMode` = `Auto` (default) | from `Credential:Mode` | device code when `Mode` is `AzureCli`, or `DeviceCode` without a `ClientId`; otherwise the main credential |
 
-That identity needs:
-
-- **Contributor** (or higher) on each workspace. `getDefinition` requires read *and
-  write* permission on the model and the report.
-- The workspace on Premium or Fabric capacity with **XMLA read** enabled.
-- For a service principal or managed identity, the tenant setting *Service principals
-  can use Fabric APIs*. After a change it takes about 15 minutes to apply.
+`UseCredential` takes any Azure.Identity credential, such as a managed identity or the
+service principal you already embed with. `Credential:Mode` is `ServicePrincipal`
+(deployed), `MasterUser`, `DeviceCode`, or `AzureCli` (dev only); see the
+[reference](#configuration-reference). The identity's permissions are listed in
+[Before you start](#before-you-start).
 
 ### 3. Browser
 
@@ -217,10 +243,14 @@ sealed class CustomerRls : IEffectiveIdentityProvider
 Match what your embed token grants. If the embed token applies RLS and the export
 doesn't, the export shows more rows than the user can see in the report.
 
-**Audit.** `IExportAuditSink.WriteAsync` receives a `VisualExportAuditRecord` after every
-export, whether it completed, failed or was canceled. The record has the user, the
-workspace, report, page and visual, the field and row counts, the effective user name,
-the outcome and the duration. Sink failures are logged and ignored.
+**Audit.** `IExportAuditSink.WriteAsync` receives a `VisualExportAuditRecord` for every
+export that reaches the data step: a `csv` request, or a `download` with a valid ticket,
+once it has a concurrency slot. That covers completed, failed and canceled exports,
+including a `csv` request that fails planning (e.g. field validation). The record has
+the user, the workspace, report, page and visual, the number of requested fields, the
+rows written, the effective user name, the outcome and the duration. There's no record
+for requests rejected before that (request checks, an invalid ticket, 429), for
+`prepare`, or for `bench`. Sink failures are logged and ignored.
 
 **Cross-origin API.** If the page and the API are on different origins, set `apiBase`
 to the absolute URL, and add a CORS policy to the group:
@@ -252,7 +282,7 @@ Section `PbiVisualExport` (environment variables use `__`, for example
 | `Credential:TenantId` | | Required for `ServicePrincipal` and `MasterUser`. |
 | `Credential:ClientId` / `ClientSecret` | | `ServicePrincipal` (`MasterUser` and `DeviceCode` use `ClientId`). Keep the secret in Key Vault or an environment variable. |
 | `Credential:Username` / `Password` | | `MasterUser`. |
-| `Credential:XmlaMode` | `Auto` | `Auto`: device code when `Mode` is `AzureCli`, else `Shared`. `Shared`: the main credential. `DeviceCode`: always (dev). |
+| `Credential:XmlaMode` | `Auto` | `Auto`: device code when `Mode` is `AzureCli`, or `DeviceCode` without a `ClientId`; else `Shared`. `Shared`: the main credential. `DeviceCode`: always (dev). Ignored when the host calls `UseCredential`. |
 | `Credential:XmlaClientId` | `cf710c6e-…` | The public client for XMLA device-code sign-in: Microsoft's Analysis Services client, the same in every tenant. |
 | `Export:FieldValidation` | `Strict` | `Strict`: fields must be in the visual's saved PBIR definition, and PBIR-Legacy reports are refused. `PbirOnly`: PBIR-Legacy reports are exported unchecked. `Off`: trust the request. |
 | `Export:MaxRows` | `0` | An exact cap on rows, where 0 means unlimited. The query uses `TOPN`, and the CSV stops at N rows (rows tied at the cut are dropped). |
@@ -311,12 +341,14 @@ An `aggregation` uses the names the SDK's `getDataFields` returns: `Sum`, `Avg`,
 which is **Count (Distinct)**. A hierarchy level is sent as `{ "table", "hierarchy",
 "hierarchyLevel" }` in place of `column`.
 
-Errors are JSON `{ error, problems? }`:
+Errors are JSON `{ error }`. Request-validation 400s (missing or non-GUID IDs, no
+fields, an unknown report, or an ID or name that disagrees with the catalog) also carry
+`problems`, one message per issue.
 
 | Status | Meaning |
 |---|---|
-| 400 | Invalid request, or a field that's in neither the model nor the report. |
-| 403 | Workspace not allowed, authorizer denial, field validation, or a ticket issued to another user. |
+| 400 | Request validation (above); a field or measure that's in neither the model nor the report's measures; report measures on a non-PBIR report; no `pageName`/`visualName` under `Strict`; a filter that can't be translated; an unknown aggregation; an invalid M parameter value or time zone. |
+| 403 | Workspace not allowed; authorizer denial; under `Strict`, a visual or field that isn't in the saved report, or a PBIR-Legacy report; a ticket issued to another user. |
 | 404 | Unknown, expired or already-used ticket. |
 | 415 | Not `application/json`. |
 | 429 | Concurrency limit. |

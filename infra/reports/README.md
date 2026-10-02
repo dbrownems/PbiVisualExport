@@ -161,7 +161,8 @@ visible by reading the report definition (enhanced PBIR), which is exactly why
 every report here is authored in that format.
 
 The exporter supports them: when a visual uses a measure the model doesn't have,
-it downloads (and caches) the report definition, finds the measure in
+it reads the (cached) report definition — already loaded for field validation
+unless `Export:FieldValidation` is `Off` — finds the measure in
 `reportExtensions.json`, and adds it — with the report measures it references,
 dependencies first — to the export query as `DEFINE MEASURE 'Sales'[…] = …`.
 `Sales per Store (K)` exists to test exactly that dependency, and its leading `//`

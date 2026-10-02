@@ -11,9 +11,12 @@ namespace PbiVisualExport.Services;
 
 /// <summary>
 /// Implements the endpoints mapped by <see cref="PbiVisualExportEndpointRouteBuilderExtensions.MapPbiVisualExport"/>.
-/// Error responses are JSON <c>{ error, problems? }</c>: 400 invalid request, 403 not allowed,
-/// 415 not JSON, 429 too many concurrent exports, 503 <c>{ signInRequired, verificationUri,
-/// userCode }</c> when the XMLA device-code sign-in (development) is pending, 500 otherwise.
+/// Error responses are JSON <c>{ error }</c>, plus <c>problems</c> (a list) on request-validation
+/// 400s from <see cref="ExportRequestResolver"/>: 400 invalid or unexportable request, 403 not
+/// allowed (allow-list, authorizer, field validation, another user's ticket), 404 unknown,
+/// expired or used ticket, 415 not JSON, 429 too many concurrent exports, 503
+/// <c>{ signInRequired, verificationUri, userCode }</c> when the XMLA device-code sign-in
+/// (development) is pending, 500 otherwise.
 /// A failure after the CSV has started streaming aborts the connection, so the client sees
 /// a failed download rather than a silently truncated file.
 /// </summary>

@@ -73,7 +73,10 @@ public enum VisualExportOutcome
     Canceled
 }
 
-/// <summary>One finished (or failed) export, reported to every <see cref="IExportAuditSink"/>.</summary>
+/// <summary>
+/// One export that reached the data step, reported to every <see cref="IExportAuditSink"/>.
+/// <see cref="Fields"/> is the number of requested fields; <see cref="Rows"/> the rows written.
+/// </summary>
 public sealed record VisualExportAuditRecord(
     DateTimeOffset StartedAt,
     TimeSpan Duration,
@@ -95,8 +98,10 @@ public sealed record VisualExportAuditRecord(
     string? Error);
 
 /// <summary>
-/// Receives an audit record after each export, whether it completed, failed or was canceled.
-/// Sink failures are logged and ignored. Register with <see cref="PbiVisualExportBuilder.AddAuditSink{T}"/>
+/// Receives an audit record for each <c>csv</c> request and each <c>download</c> with a valid
+/// ticket, once it has a concurrency slot, whether it completed, failed or was canceled.
+/// Requests rejected before that (request checks, invalid tickets, 429), <c>prepare</c> and
+/// <c>bench</c> are not audited. Sink failures are logged and ignored. Register with <see cref="PbiVisualExportBuilder.AddAuditSink{T}"/>
 /// (any number of sinks).
 /// </summary>
 public interface IExportAuditSink
