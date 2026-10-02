@@ -80,7 +80,6 @@ internal static class Fixtures
         JsonSerializer.Serialize(new ReportDefinitionSnapshot
         {
             Format = format ?? ReportDefinition.DetectFormat(parts.Keys),
-            PartPaths = parts.Keys.ToList(),
             Parts = new Dictionary<string, string>(parts, StringComparer.OrdinalIgnoreCase)
         }, ReportDefinition.JsonOptions);
 

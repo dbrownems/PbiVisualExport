@@ -571,8 +571,9 @@ _sample/                                   upstream MS "Embed for your customers
   download), and caches (kind `report`) a JSON snapshot of the text parts
   (`StaticResources/` skipped): format + `path → text`. Parsed as
   `ReportDefinition`: `Format` (`PBIR` when a `definition/report.json` part exists,
-  `PBIR-Legacy` for a root `report.json`, else `Unknown`), `Parts` (kept for future
-  report-design features) and, for PBIR only, the `reportExtensions.json` measures.
+  `PBIR-Legacy` for a root `report.json`, else `Unknown`) and, for PBIR only, the
+  `reportExtensions.json` measures and the saved visuals (fields, sort) that
+  `VisualFieldValidator` checks against.
 - **`MetadataCache`** avoids re-downloading definitions on every export. Keyed by
   **(kind, item id)**; three layers, all governed by `MetadataCacheOptions`
   (`PbiVisualExport:MetadataCache` config section): (1) in-process parsed value (`TOM.Model` /

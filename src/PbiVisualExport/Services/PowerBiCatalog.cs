@@ -5,7 +5,7 @@ using PbiVisualExport.Auth;
 
 namespace PbiVisualExport.Services;
 
-internal sealed record CatalogReport(Guid Id, string Name, Guid DatasetId, string? EmbedUrl);
+internal sealed record CatalogReport(Guid Id, string Name, Guid DatasetId);
 
 /// <summary>Names of a workspace and its datasets/reports, keyed by ID.</summary>
 internal sealed record WorkspaceCatalog(
@@ -70,7 +70,7 @@ internal sealed class PowerBiCatalog : IPowerBiCatalog
                 .Where(r => !string.Equals(Str(r, "reportType"), "PaginatedReport", StringComparison.OrdinalIgnoreCase)
                             && Guid.TryParse(Str(r, "datasetId"), out _))
                 .Select(r => new CatalogReport(
-                    Guid.Parse(Str(r, "id")!), Str(r, "name") ?? "", Guid.Parse(Str(r, "datasetId")!), Str(r, "embedUrl")))
+                    Guid.Parse(Str(r, "id")!), Str(r, "name") ?? "", Guid.Parse(Str(r, "datasetId")!)))
                 .ToDictionary(r => r.Id));
 
         _cache.Set(key, catalog, Ttl);

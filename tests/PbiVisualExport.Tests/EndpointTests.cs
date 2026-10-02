@@ -51,7 +51,7 @@ public sealed class EndpointTests : IAsyncLifetime
         builder.WebHost.UseTestServer();
         builder.Logging.ClearProviders();
         builder.Services.AddSingleton<IPowerBiCatalog>(new StubCatalog(StubCatalog.Workspace(Fixtures.WorkspaceId, "Workspace",
-            new[] { (Fixtures.DatasetId, "Dataset") }, new CatalogReport(Fixtures.ReportId, Report, Fixtures.DatasetId, "https://embed"))));
+            new[] { (Fixtures.DatasetId, "Dataset") }, new CatalogReport(Fixtures.ReportId, Report, Fixtures.DatasetId))));
         builder.Services.AddAuthentication(TestAuth.Name).AddScheme<AuthenticationSchemeOptions, TestAuth>(TestAuth.Name, null);
         var export = builder.Services.AddPbiVisualExport(o =>
         {

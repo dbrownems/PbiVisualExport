@@ -12,8 +12,8 @@ public class ExportRequestResolverTests
     private static readonly Guid OrphanRpt = Guid.Parse("cccccccc-0000-0000-0000-000000000002");
 
     private readonly StubCatalog _catalog = new(StubCatalog.Workspace(Ws, "Sales WS", new[] { (Ds, "Sales Model") },
-        new CatalogReport(Rpt, "Sales Report", Ds, "https://embed/rpt"),
-        new CatalogReport(OrphanRpt, "Orphan", OtherDs, "https://embed/orphan")));
+        new CatalogReport(Rpt, "Sales Report", Ds),
+        new CatalogReport(OrphanRpt, "Orphan", OtherDs)));
 
     private DelegateAuthorizer _authorizer = new(_ => VisualExportAuthorization.Allow());
 

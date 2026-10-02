@@ -46,7 +46,6 @@ internal sealed class ReportDefinitionService
         var snapshot = new ReportDefinitionSnapshot
         {
             Format = ReportDefinition.DetectFormat(parts.Select(p => p.Path)),
-            PartPaths = parts.Select(p => p.Path).ToList(),
             // Keep the text parts (report/page/visual JSON, reportExtensions.json, ...); skip
             // StaticResources (themes, images), which report metadata never needs.
             Parts = parts
@@ -62,7 +61,6 @@ internal sealed class ReportDefinitionService
 internal sealed class ReportDefinitionSnapshot
 {
     public string Format { get; set; } = "";
-    public List<string> PartPaths { get; set; } = new();
     public Dictionary<string, string> Parts { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }
 
@@ -70,7 +68,7 @@ internal sealed class ReportDefinitionSnapshot
 /// <param name="Entity">Home table; must exist in the semantic model.</param>
 /// <param name="DependsOn">Other report measures its expression references (by name).</param>
 internal sealed record ReportMeasure(
-    string Entity, string Name, string Expression, string? DataType, string? FormatString, IReadOnlyList<string> DependsOn);
+    string Entity, string Name, string Expression, string? FormatString, IReadOnlyList<string> DependsOn);
 
 /// <summary>A parsed, cached report definition. Shared across requests: read-only.</summary>
 internal sealed partial class ReportDefinition
@@ -88,12 +86,9 @@ internal sealed partial class ReportDefinition
     private readonly Dictionary<string, ReportMeasure> _measuresByName;
     private readonly Dictionary<(string Page, string Visual), VisualDefinition> _visuals;
 
-    private ReportDefinition(string format, IReadOnlyList<string> partPaths, IReadOnlyDictionary<string, string> parts,
-        List<ReportMeasure> measures, List<VisualDefinition> visuals, List<string> visualErrors)
+    private ReportDefinition(string format, List<ReportMeasure> measures, List<VisualDefinition> visuals, List<string> visualErrors)
     {
         Format = format;
-        PartPaths = partPaths;
-        Parts = parts;
         Measures = measures;
         _measuresByName = new Dictionary<string, ReportMeasure>(StringComparer.OrdinalIgnoreCase);
         foreach (var m in measures) _measuresByName.TryAdd(m.Name, m);
@@ -105,12 +100,6 @@ internal sealed partial class ReportDefinition
     /// <summary><c>PBIR</c> (enhanced report format), <c>PBIR-Legacy</c>, or <c>Unknown</c>.</summary>
     public string Format { get; }
     public bool IsPbir => Format == Pbir;
-
-    /// <summary>Every part path in the definition, including skipped static resources.</summary>
-    public IReadOnlyList<string> PartPaths { get; }
-
-    /// <summary>Text parts by path (case-insensitive), excluding <c>StaticResources/</c>.</summary>
-    public IReadOnlyDictionary<string, string> Parts { get; }
 
     public IReadOnlyList<ReportMeasure> Measures { get; }
 
@@ -165,7 +154,7 @@ internal sealed partial class ReportDefinition
         var visuals = new List<VisualDefinition>();
         var visualErrors = new List<string>();
         if (s.Format == Pbir) ParseVisuals(parts, visuals, visualErrors);
-        return new ReportDefinition(s.Format, s.PartPaths, parts, measures, visuals, visualErrors);
+        return new ReportDefinition(s.Format, measures, visuals, visualErrors);
     }
 
     /// <summary>
@@ -216,13 +205,13 @@ internal sealed partial class ReportDefinition
 
     /// <summary>
     /// Reads <c>reportExtension/1.0.0</c>: <c>entities[].measures[]</c> with name, expression,
-    /// dataType, formatString and <c>references.measures[]</c> (<c>schema</c> empty = model
+    /// formatString and <c>references.measures[]</c> (<c>schema</c> empty = model
     /// measure, otherwise the extension name = another report measure).
     /// </summary>
     internal static List<ReportMeasure> ParseReportExtensions(string json)
     {
         using var doc = JsonDocument.Parse(json, new JsonDocumentOptions { CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true });
-        var raw = new List<(string Entity, string Name, string Expression, string? DataType, string? Format, List<string> Refs)>();
+        var raw = new List<(string Entity, string Name, string Expression, string? Format, List<string> Refs)>();
         if (doc.RootElement.TryGetProperty("entities", out var entities) && entities.ValueKind == JsonValueKind.Array)
         {
             foreach (var entity in entities.EnumerateArray())
@@ -239,7 +228,7 @@ internal sealed partial class ReportDefinition
                         foreach (var rm in rms.EnumerateArray())
                             if (!string.IsNullOrEmpty(Str(rm, "schema")) && Str(rm, "name") is { } refName)
                                 refs.Add(refName);
-                    raw.Add((entityName, name, expression, Str(m, "dataType"), Str(m, "formatString"), refs));
+                    raw.Add((entityName, name, expression, Str(m, "formatString"), refs));
                 }
             }
         }
@@ -254,7 +243,7 @@ internal sealed partial class ReportDefinition
                 .Where(n => names.Contains(n) && !string.Equals(n, x.Name, StringComparison.OrdinalIgnoreCase))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
-            return new ReportMeasure(x.Entity, x.Name, x.Expression, x.DataType, x.Format, deps);
+            return new ReportMeasure(x.Entity, x.Name, x.Expression, x.Format, deps);
         }).ToList();
     }
 
