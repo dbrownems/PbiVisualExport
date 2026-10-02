@@ -203,6 +203,51 @@ public class DaxQueryBuilderTests
         Assert.DoesNotContain("ORDER BY", plan.BuildQuery());
     }
 
+    [Fact]
+    public void RepeatedSortOnAFormattedMeasure_ReusesOneHiddenKey()
+    {
+        var r = Samples.Request(Samples.Column("Sales", "Region"), Samples.Measure("Sales", "Total"));
+        r.Sort.Add(new ExportSort { Table = "Sales", Measure = "Total", Direction = "Descending" });
+        r.Sort.Add(new ExportSort { Table = "Sales", Measure = "Total", Direction = "Descending" });
+        var plan = Build(r);
+        var q = plan.BuildQuery();
+        Assert.Contains("\"s0\", [m_0]", q);
+        Assert.DoesNotContain("\"s1\"", q);
+        Assert.EndsWith("ORDER BY [s0] DESC", q);
+        Assert.Single(System.Text.RegularExpressions.Regex.Matches(plan.BuildQuery(10), @", \[s0\], 0"));
+    }
+
+    [Fact]
+    public void RepeatedSortOnAMeasureNotShown_AddsOneSortOnlyMeasure()
+    {
+        var r = Samples.Request(Samples.Column("Sales", "Region"));
+        r.Sort.Add(new ExportSort { Table = "Sales", Measure = "Count", Direction = "Descending" });
+        r.Sort.Add(new ExportSort { Table = "Sales", Measure = "Count", Direction = "Descending" });
+        var q = Build(r).BuildQuery();
+        Assert.Contains("\"m_0\", [Count]", q);
+        Assert.DoesNotContain("m_1", q);
+        Assert.DoesNotContain("\"s1\"", q);
+        Assert.EndsWith("ORDER BY [s0] DESC", q);
+    }
+
+    [Fact]
+    public void RepeatedSortOnAVisibleColumn_OrdersByItOnce()
+    {
+        var r = Samples.Request(Samples.Column("Sales", "Region"), Samples.Measure("Sales", "Total"));
+        r.Sort.Add(new ExportSort { Table = "Sales", Column = "Region" });
+        r.Sort.Add(new ExportSort { Table = "Sales", Column = "Region", Direction = "Descending" });
+        Assert.EndsWith("ORDER BY [c0] ASC", Build(r).BuildQuery());
+    }
+
+    [Fact]
+    public void SortsSharingASortByColumn_OrderByItOnce()
+    {
+        var r = Samples.Request(Samples.Column("Sales", "Month Name"), Samples.Column("Sales", "Month Number"));
+        r.Sort.Add(new ExportSort { Table = "Sales", Column = "Month Name", Direction = "Descending" });
+        r.Sort.Add(new ExportSort { Table = "Sales", Column = "Month Number" });
+        Assert.EndsWith("ORDER BY [c1] DESC", Build(r).BuildQuery());
+    }
+
     // ---- Filters ----
 
     [Fact]

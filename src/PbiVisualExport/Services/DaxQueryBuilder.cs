@@ -203,29 +203,29 @@ internal sealed class DaxPlan
     private List<string> Projection(out List<(string Ref, bool Descending)> order)
     {
         var proj = new List<string>();
-        var exprs = new List<string>();
+        var aliasOf = new Dictionary<string, string>(StringComparer.Ordinal);
         for (int i = 0; i < _items.Count; i++)
         {
-            exprs.Add(OutputExpression(_items[i]));
-            proj.Add($"\"{Columns[i].Alias}\", {exprs[i]}");
+            var expr = OutputExpression(_items[i]);
+            proj.Add($"\"{Columns[i].Alias}\", {expr}");
+            aliasOf.TryAdd(expr, Columns[i].Alias);
         }
 
-        // Sort on raw values: reuse an output column that already projects the raw expression,
-        // otherwise add a hidden [sN] key (formatted text like "$1,000" would sort as text).
+        // Sort on raw values: reuse a column that already projects the raw expression, otherwise
+        // add a hidden [sN] key (formatted text like "$1,000" would sort as text). A repeated key
+        // can't change the order, so only its first occurrence is kept.
         order = new List<(string, bool)>();
+        var used = new HashSet<string>(StringComparer.Ordinal);
         int si = 0;
         foreach (var key in _sortKeys)
         {
-            var hit = exprs.IndexOf(key.Expression);
-            if (hit >= 0)
+            if (!aliasOf.TryGetValue(key.Expression, out var alias))
             {
-                order.Add(($"[{Columns[hit].Alias}]", key.Descending));
-                continue;
+                alias = $"s{si++}";
+                proj.Add($"\"{alias}\", {key.Expression}");
+                aliasOf.Add(key.Expression, alias);
             }
-            var alias = $"s{si++}";
-            proj.Add($"\"{alias}\", {key.Expression}");
-            exprs.Add(key.Expression);
-            order.Add(($"[{alias}]", key.Descending));
+            if (used.Add(alias)) order.Add(($"[{alias}]", key.Descending));
         }
         return proj;
     }
@@ -442,6 +442,8 @@ internal sealed class DaxQueryBuilder
             if (i >= 0) return i;
             var expr = sortOnlyExpression();
             if (expr is null) return -1;
+            i = measures.FindIndex(m => m.Source is null && m.Expression == expr);
+            if (i >= 0) return i;
             measures.Add(new MeasureField(label, expr, null, null));
             return measures.Count - 1;
         }
