@@ -255,7 +255,7 @@ Section `PbiVisualExport` (environment variables use `__`, for example
 | `Credential:XmlaMode` | `Auto` | `Auto`: device code when `Mode` is `AzureCli`, else `Shared`. `Shared`: the main credential. `DeviceCode`: always (dev). |
 | `Credential:XmlaClientId` | `cf710c6e-…` | The public client for XMLA device-code sign-in: Microsoft's Analysis Services client, the same in every tenant. |
 | `Export:FieldValidation` | `Strict` | `Strict`: fields must be in the visual's saved PBIR definition, and PBIR-Legacy reports are refused. `PbirOnly`: PBIR-Legacy reports are exported unchecked. `Off`: trust the request. |
-| `Export:MaxRows` | `0` | A cap on rows (`TOPN`), where 0 means unlimited. |
+| `Export:MaxRows` | `0` | An exact cap on rows, where 0 means unlimited. The query uses `TOPN`, and the CSV stops at N rows (rows tied at the cut are dropped). |
 | `Export:CommandTimeoutSeconds` | `0` | The XMLA command timeout, where 0 means none. |
 | `Export:ValidateParameterValues` | `true` | Rejects (400) a filter that would set a dynamic M query parameter to a value missing from its bound column. Power BI passes such values to the source unchecked; `false` does the same. The model's own select-all value isn't checked. |
 | `Export:MaxConcurrentExportsPerUser` | `2` | Above this, requests get 429. 0 means unlimited. |

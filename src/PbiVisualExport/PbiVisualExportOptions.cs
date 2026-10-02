@@ -64,7 +64,10 @@ public sealed class CredentialOptions
 
 public sealed class ExportOptions
 {
-    /// <summary>Hard cap on total exported rows (0 = unlimited). Applied in DAX via TOPN.</summary>
+    /// <summary>
+    /// Exact cap on exported rows (0 = unlimited). The query is wrapped in DAX <c>TOPN</c> to limit
+    /// server work, and since <c>TOPN</c> keeps ties the stream also stops after this many rows.
+    /// </summary>
     public long MaxRows { get; set; } = 0;
 
     /// <summary>XMLA command timeout for the export query in seconds (0 = no timeout).</summary>

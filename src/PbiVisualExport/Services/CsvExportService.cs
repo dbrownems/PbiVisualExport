@@ -66,7 +66,8 @@ internal sealed class CsvExportService
             await writer.WriteLineAsync(string.Join(",", plan.Columns.Select(c => CsvEscape(c.Header))));
 
             var line = new StringBuilder(512);
-            while (reader.Read())
+            // TOPN keeps ties, so the reader may return more than MaxRows rows: stop at the cap.
+            while (!AtRowCap(rows) && reader.Read())
             {
                 line.Clear();
                 for (int i = 0; i < ordinals.Length; i++)
@@ -89,7 +90,7 @@ internal sealed class CsvExportService
         _log.LogInformation(
             "Export complete: {Rows:N0} rows x {Cols} columns in {Sec:F1}s ({RowsPerSec:N0} rows/s; connect {Connect:F1}s, first data {First:F1}s), formatted={Formatted}, sort={Sort}{Capped}",
             rows, plan.Columns.Count, secs, rows / Math.Max(secs, 0.001), q.ConnectedAt.TotalSeconds, q.FirstDataAt.TotalSeconds,
-            plan.ApplyFormatStrings, plan.SortDescription, _export.MaxRows > 0 && rows >= _export.MaxRows ? $" (MaxRows cap {_export.MaxRows:N0} reached)" : "");
+            plan.ApplyFormatStrings, plan.SortDescription, AtRowCap(rows) ? $" (MaxRows cap {_export.MaxRows:N0} reached)" : "");
         _log.LogDebug("Export GC (process-wide): {Gc}", GcSnapshot.Take().Since(gc));
         return rows;
     }
@@ -107,7 +108,7 @@ internal sealed class CsvExportService
         var ordinals = q.Ordinals;
 
         long rows = 0, chars = 0;
-        while (reader.Read())
+        while (!AtRowCap(rows) && reader.Read())
         {
             for (int i = 0; i < ordinals.Length; i++)
             {
@@ -225,6 +226,8 @@ internal sealed class CsvExportService
                       $"report '{request.ReportName}' ({ReportDefinition.ExtensionsPath}): {string.Join(", ", measures)}.");
         return new ExportRequestException(string.Join(" ", parts));
     }
+
+    private bool AtRowCap(long rows) => _export.MaxRows > 0 && rows >= _export.MaxRows;
 
     /// <summary>Builds the plan, connects and executes; the reader is positioned before the first row.</summary>
     private async Task<OpenQuery> OpenQueryAsync(VisualExportRequest request, EffectiveIdentity? identity, Stopwatch sw, CancellationToken ct)

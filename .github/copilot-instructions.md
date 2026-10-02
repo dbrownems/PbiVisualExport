@@ -386,7 +386,8 @@ _sample/                                   upstream MS "Embed for your customers
   measures** below), opens an ADOMD.NET connection via `XmlaConnectionFactory`, runs the **single**
   query with `ExecuteReader`, writes a UTF-8 (BOM) header row, and streams each row,
   flushing every 16k rows — memory stays flat at any size (see **Performance**
-  below). `Export:MaxRows` > 0 wraps the query in `TOPN`;
+  below). `Export:MaxRows` > 0 wraps the query in `TOPN` and stops reading after
+  that many rows (`TOPN` keeps ties, so it can return more);
   `Export:CommandTimeoutSeconds` 0 = no timeout. Raw values are written
   culture-invariant with full precision (`double` round-trip `R`, exact
   `decimal`/`long`, ISO-8601 datetimes, `true`/`false`, BLANK → empty).
