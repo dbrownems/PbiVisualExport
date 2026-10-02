@@ -145,7 +145,10 @@ function Publish-Folder([string]$Folder, [string]$Kind){
   if($existing){ $a.ItemId = $existing.id; $a.UpdateMetadata = $true } else { $a.DisplayName = $name }
   & "$PSScriptRoot\deploy-model.ps1" @a | Out-Host
   if($whatIf){ Add-Summary $type $name $existing "would $verb"; return }
-  Add-Summary $type $name (Find-Item $Kind $name) "${verb}d"
+  $action = "${verb}d"
+  # The PBIX import creates the StoreSales report too; the PBIR here then replaces it.
+  if($Kind -eq 'reports' -and $name -eq 'StoreSales' -and $script:storeSalesImported){ $action = 'imported (PBIX), then updated from PBIR' }
+  Add-Summary $type $name (Find-Item $Kind $name) $action
 }
 
 function Import-Pbix([string]$Path, [string]$Name){
@@ -238,6 +241,7 @@ if($storeSales){
   Write-Host "`n== SemanticModel 'StoreSales' (import StoreSales.pbix) ==" -ForegroundColor Cyan
   if($PSCmdlet.ShouldProcess('infra/samples/StoreSales.pbix', 'Import')){
     Import-Pbix (Join-Path $root 'infra\samples\StoreSales.pbix') 'StoreSales'
+    $script:storeSalesImported = $true
     Add-Summary 'SemanticModel' 'StoreSales' (Find-Item 'semanticModels' 'StoreSales') 'imported'
   } else {
     Add-Summary 'SemanticModel' 'StoreSales' $null 'would import'

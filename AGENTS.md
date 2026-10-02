@@ -60,7 +60,8 @@ library and served at `{prefix}/client.js`). The sample host shows the wiring.
   (deploys the Warehouse, models and reports to a workspace and refreshes them;
   rerunnable, updates in place), `deploy-model.ps1`
   (workspace from a subset of the settings cascade via `settings.ps1`; `{{…}}`
-  tokens resolved at deploy time), `generate-large-export.py`, `compare-exports.py`.
+  tokens resolved at deploy time), `smoke-export.ps1` (exports StoreSales `table1`
+  through a running host: the setup check), `generate-large-export.py`, `compare-exports.py`.
 - `tools/` — `WhSql` (seed a Warehouse).
 - `_sample/` — untouched Microsoft "Embed for your customers/AppOwnsData" clone
   (reference only; git-ignored).

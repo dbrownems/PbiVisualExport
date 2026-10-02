@@ -64,18 +64,51 @@ Terms used below:
 
 `samples/PbiVisualExport.SampleHost` embeds the reports in one workspace. It has a
 visual picker, an **Export data** button, a debug panel showing the request JSON, and
-a **Native export** button for comparing with Power BI's own export.
+a **Native export** button for comparing with Power BI's own export. You need the
+.NET 10 SDK and the Azure CLI; dev mode uses your `az login` identity ("super user").
+
+**1. A workspace with reports.** Use an existing workspace that has reports, or deploy
+the sample content (the reports in [`infra/reports`](infra/reports/README.md), their
+models and a seeded Warehouse) to a new one:
+
+1. Create a workspace and assign it a Premium or Fabric capacity (in the Power BI
+   portal: *Workspace settings > License info*).
+2. Deploy everything (about 5 minutes; rerunning it updates the items in place):
+
+   ```pwsh
+   az login
+   .\infra\deploy-all.ps1 -Workspace <workspace-guid>   # -WhatIf shows the plan first
+   ```
+
+   It creates and seeds the Warehouse `ExportTestWH`, deploys the models and reports,
+   then refreshes the models.
+
+**2. Run the host** with the workspace ID, from user secrets or an environment variable:
 
 ```pwsh
-az login                                   # dev mode uses your Azure CLI identity ("super user")
+az login
 $p = 'samples/PbiVisualExport.SampleHost'
 dotnet user-secrets set PowerBI:WorkspaceId <workspace-guid> --project $p
+# or, for this shell only: $env:PowerBI__WorkspaceId = '<workspace-guid>'
 dotnet run --project $p                    # http://localhost:5099
 ```
 
-The first export asks for a one-time **XMLA device-code sign-in**, because the XMLA
-endpoint rejects Azure CLI tokens. The page shows the code, and the token is cached
-after that. The sample has no user sign-in of its own, so it maps the endpoints with
+`PowerBI:ReportId` (optional) picks the first report shown.
+
+**3. Sign in for XMLA.** The first export asks for a one-time **XMLA device-code
+sign-in**, because the XMLA endpoint rejects Azure CLI tokens. The page shows the code
+(the export returns 503 with `signInRequired`), and the token is cached after that.
+`GET http://localhost:5099/pbi-export/xmla-auth` shows the sign-in status.
+
+**4. Smoke test** (sample content only). With the host running, this exports StoreSales
+Page1 `table1` through the same endpoints the page uses and checks the result (4 rows,
+4 columns). It prints the device code if XMLA sign-in is still needed:
+
+```pwsh
+.\infra\smoke-export.ps1
+```
+
+The sample has no user sign-in of its own, so it maps the endpoints with
 `.AllowAnonymous()`. Don't copy that part.
 
 ## Add it to your app
@@ -442,10 +475,15 @@ infra/                               Fabric test models and PBIR reports, deploy
 
 ```pwsh
 dotnet build PbiVisualExport.sln
-dotnet test tests/PbiVisualExport.Tests                    # 123 tests × 2 target frameworks
+dotnet test tests/PbiVisualExport.Tests                    # both target frameworks, no Power BI access needed
 cd src/pbi-visual-export-js; npm ci; npm run build; npm test
 ```
 
+- **Package feeds**: restore uses nuget.org and the npm registry. On a Microsoft-managed
+  device those are blocked; point NuGet at
+  `https://packagefeedproxy.microsoft.io/nuget/v3/index.json` in a `nuget.config` next to
+  the solution (git-ignored), and npm at `https://packagefeedproxy.microsoft.io/npm/`
+  (`npm config set registry …`).
 - **Golden DAX**: `tests/PbiVisualExport.Tests/Golden/*.dax` holds the DAX generated for
   fixture visuals, each verified against a live model. After an intended DAX change,
   regenerate the files with `$env:UPDATE_GOLDEN=1; dotnet test`, then review the diff.

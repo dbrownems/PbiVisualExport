@@ -8,7 +8,8 @@ never a single legacy `report.json` blob — so report design is **inspectable**
 
 To deploy everything (Warehouse, models, reports, refresh) to a workspace, run
 `infra/deploy-all.ps1`; it matches items by display name and updates existing ones
-in place. Deploy or update a single report with `infra/deploy-model.ps1 -Kind reports`, which
+in place. Then start the sample host and run `infra/smoke-export.ps1` to check an
+export end to end. Deploy or update a single report with `infra/deploy-model.ps1 -Kind reports`, which
 base64-encodes every part under the folder. The target workspace comes from the
 `PowerBI:WorkspaceId` setting (user secrets or `PowerBI__WorkspaceId`), unless you
 pass `-Workspace`. To **replace an existing report in
