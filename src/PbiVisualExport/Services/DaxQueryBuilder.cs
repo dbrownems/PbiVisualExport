@@ -82,12 +82,14 @@ internal sealed partial class DaxQueryBuilder
         request = ResolveHierarchyLevels(request, model);
 
         // A measure not in the model may be a report-level measure (names are unique across both).
-        ReportMeasure? UseReportMeasure(string name)
+        // Returns it (or null) and records it as used, so the query DEFINEs it.
+        ReportMeasure? TryUseReportMeasure(string name)
         {
             var rm = report?.FindMeasure(name);
             if (rm is not null && !usedReportMeasures.Contains(rm)) usedReportMeasures.Add(rm);
             return rm;
         }
+        Func<string, bool> useReportMeasure = name => TryUseReportMeasure(name) is not null;
 
         foreach (var f in request.Fields)
         {
@@ -107,7 +109,7 @@ internal sealed partial class DaxQueryBuilder
             {
                 if (!string.IsNullOrEmpty(f.Measure))
                 {
-                    var format = FindMeasure(model, f.Measure!) is { } m ? m.FormatString : UseReportMeasure(f.Measure!)?.FormatString;
+                    var format = FindMeasure(model, f.Measure!) is { } m ? m.FormatString : TryUseReportMeasure(f.Measure!)?.FormatString;
                     measures.Add(new MeasureField(f.DisplayName, $"[{EscBracket(f.Measure!)}]", format, f));
                 }
                 else if (!string.IsNullOrEmpty(f.Column) && !string.IsNullOrEmpty(f.Aggregation))
@@ -141,26 +143,22 @@ internal sealed partial class DaxQueryBuilder
             throw new ExportRequestException("The visual has no exportable columns or measures (all fields are hidden on the visual).");
 
         var extraGroupBy = GroupByKeyColumns(request, model, dims);
-        var filters = BuildFilters(request.Filters, model, measures, name => UseReportMeasure(name) is not null,
+        var filters = BuildFilters(request.Filters, model, measures, useReportMeasure,
             new ClientTime(request.TimeZone, clock.GetUtcNow().UtcDateTime));
 
-        List<SortKey> sortKeys;
-        string sortDescription;
-        if (request.ApplySort)
-            sortKeys = BuildSortKeys(request.Sort, model, dims, measures, extraGroupBy, warnings,
-                name => UseReportMeasure(name) is not null, out sortDescription);
-        else
-        {
-            sortKeys = new List<SortKey>();
-            sortDescription = "off";
-        }
+        var sortPlan = request.ApplySort
+            ? BuildSortKeys(request.Sort, model, dims, measures, extraGroupBy, warnings, useReportMeasure)
+            : SortPlan.Off;
+        // Sort-only measures get the next [m_i] aliases; Sort By Columns are grouped on too.
+        measures.AddRange(sortPlan.AddedMeasures);
+        extraGroupBy.AddRange(sortPlan.AddedGroupBy);
 
         // Output columns in visual order, with stable positional DAX aliases.
         var outCols = items
             .Select((it, i) => new DaxOutputColumn($"c{i}", it.IsMeasure ? measures[it.Index].Header : dims[it.Index].Header, it.IsMeasure))
             .ToList();
 
-        return new DaxPlan(dims, extraGroupBy, measures, filters, items, outCols, sortKeys, sortDescription, warnings,
+        return new DaxPlan(dims, extraGroupBy, measures, filters, items, outCols, sortPlan.Keys, sortPlan.Description, warnings,
             request.ApplyFormatStrings, QueryMeasures(model, report, usedReportMeasures));
     }
 
@@ -189,13 +187,18 @@ internal sealed partial class DaxQueryBuilder
     /// Power BI does (e.g. Month Name by Month Number), which is grouped on too - it's 1:1
     /// with the column so granularity is unchanged. Without an explicit sort, Power BI's
     /// implicit order is approximated by the group-by columns ascending in visual order.
+    /// The inputs aren't modified: the measures and group-by columns the sort needs are
+    /// returned in the plan (sort-only measure <c>i</c> is <c>[m_{measures.Count + i}]</c>).
+    /// <paramref name="useReportMeasure"/> returns true for a report measure and records it as used.
     /// </summary>
-    private static List<SortKey> BuildSortKeys(List<ExportSort> sort, TOM.Model model, List<DimField> dims,
-        List<MeasureField> measures, List<string> extraGroupBy, List<string> warnings,
-        Func<string, bool> isReportMeasure, out string description)
+    private static SortPlan BuildSortKeys(List<ExportSort> sort, TOM.Model model, IReadOnlyList<DimField> dims,
+        IReadOnlyList<MeasureField> measures, IReadOnlyList<string> extraGroupBy, List<string> warnings,
+        Func<string, bool> useReportMeasure)
     {
         var keys = new List<SortKey>();
         var labels = new List<string>();
+        var addedMeasures = new List<MeasureField>();
+        var addedGroupBy = new List<string>();
         var grouped = new HashSet<string>(dims.Select(d => d.ColumnRef).Concat(extraGroupBy), StringComparer.OrdinalIgnoreCase);
 
         string DimSortExpression(string table, string column)
@@ -203,21 +206,29 @@ internal sealed partial class DaxQueryBuilder
             var sortBy = model.Tables.Find(table)?.Columns.Find(column)?.SortByColumn;
             if (sortBy is null) return ColRef(table, column);
             var sortRef = ColRef(sortBy.Table.Name, sortBy.Name);
-            if (grouped.Add(sortRef)) extraGroupBy.Add(sortRef);
+            if (grouped.Add(sortRef)) addedGroupBy.Add(sortRef);
             return sortRef;
         }
 
+        // Index of the visual measure matching the sort field, else of a sort-only measure
+        // (added once per expression); -1 when the sort field can't be built.
         int MeasureIndex(Func<ExportField, bool> match, Func<string?> sortOnlyExpression, string label)
         {
-            var i = measures.FindIndex(m => m.Source is { } f && match(f));
-            if (i >= 0) return i;
+            for (var i = 0; i < measures.Count; i++)
+                if (measures[i].Source is { } f && match(f)) return i;
             var expr = sortOnlyExpression();
             if (expr is null) return -1;
-            i = measures.FindIndex(m => m.Source is null && m.Expression == expr);
-            if (i >= 0) return i;
-            measures.Add(new MeasureField(label, expr, null, null));
-            return measures.Count - 1;
+            var j = addedMeasures.FindIndex(m => m.Expression == expr);
+            if (j < 0)
+            {
+                addedMeasures.Add(new MeasureField(label, expr, null, null));
+                j = addedMeasures.Count - 1;
+            }
+            return measures.Count + j;
         }
+
+        SortPlan Plan(string suffix) => new(keys, keys.Count > 0 ? string.Join(", ", labels) + suffix : "none",
+            addedMeasures, addedGroupBy);
 
         if (sort.Count == 0)
         {
@@ -226,8 +237,7 @@ internal sealed partial class DaxQueryBuilder
                 keys.Add(new SortKey(DimSortExpression(d.Source!.Table, d.Source.Column!), false));
                 labels.Add(d.Header + " ASC");
             }
-            description = keys.Count > 0 ? string.Join(", ", labels) + " (implicit default)" : "none";
-            return keys;
+            return Plan(" (implicit default)");
         }
 
         foreach (var s in sort)
@@ -237,7 +247,7 @@ internal sealed partial class DaxQueryBuilder
             {
                 var i = MeasureIndex(
                     f => Eq(f.Measure, s.Measure),
-                    () => FindMeasure(model, s.Measure!) is not null || isReportMeasure(s.Measure!) ? $"[{EscBracket(s.Measure!)}]" : null,
+                    () => FindMeasure(model, s.Measure!) is not null || useReportMeasure(s.Measure!) ? $"[{EscBracket(s.Measure!)}]" : null,
                     s.Measure!);
                 if (i < 0) { warnings.Add($"Sort measure [{s.Measure}] not found in the model or the report's measures; ignored."); continue; }
                 keys.Add(new SortKey($"[m_{i}]", s.Descending));
@@ -269,8 +279,17 @@ internal sealed partial class DaxQueryBuilder
             }
             labels.Add(s.Label);
         }
-        description = keys.Count > 0 ? string.Join(", ", labels) + " (visual sort)" : "none";
-        return keys;
+        return Plan(" (visual sort)");
+    }
+
+    /// <summary>
+    /// The visual's sort: <see cref="Keys"/> in priority order, and the sort-only measures
+    /// and Sort By Columns that <see cref="Build"/> appends to the measures and group-by.
+    /// </summary>
+    private sealed record SortPlan(IReadOnlyList<SortKey> Keys, string Description,
+        IReadOnlyList<MeasureField> AddedMeasures, IReadOnlyList<string> AddedGroupBy)
+    {
+        public static readonly SortPlan Off = new(Array.Empty<SortKey>(), "off", Array.Empty<MeasureField>(), Array.Empty<string>());
     }
 
     internal static string NormalizeAggregation(string? aggregation) => ImplicitAggregations.Normalize(aggregation);

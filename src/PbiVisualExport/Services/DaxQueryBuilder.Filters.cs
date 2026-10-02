@@ -20,9 +20,10 @@ internal sealed partial class DaxQueryBuilder
     /// date aren't reproduced). Any filter that can't be translated
     /// (an unsupported condition, a filter measure or hierarchy level that doesn't exist...)
     /// fails the export rather than export rows the visual excludes.
+    /// <paramref name="useReportMeasure"/> returns true for a report measure and records it as used.
     /// </summary>
     private static FilterSet BuildFilters(IEnumerable<JsonElement> filters, TOM.Model model, List<MeasureField> measures,
-        Func<string, bool> isReportMeasure, ClientTime time)
+        Func<string, bool> useReportMeasure, ClientTime time)
     {
         var set = new FilterSet();
         var bindings = ParameterBindings(model);
@@ -48,8 +49,8 @@ internal sealed partial class DaxQueryBuilder
             if (target.ValueKind != JsonValueKind.Object) continue;
             try
             {
-                if (IsTopN(filter)) AddTopN(filter, target, model, isReportMeasure, set);
-                else if (IsMeasureTarget(target)) AddValueFilter(filter, target, model, measures, isReportMeasure, set, time);
+                if (IsTopN(filter)) AddTopN(filter, target, model, useReportMeasure, set);
+                else if (IsMeasureTarget(target)) AddValueFilter(filter, target, model, measures, useReportMeasure, set, time);
                 else if (ResolveTargetColumn(target, model) is { } column)
                 {
                     // A filter on a dynamic M parameter's bound column also sets the parameter;
@@ -357,11 +358,11 @@ internal sealed partial class DaxQueryBuilder
     }
 
     /// <summary>DAX for a measure or implicit-measure target; null if the target is neither.</summary>
-    private static string? MeasureTargetExpression(JsonElement target, TOM.Model model, Func<string, bool> isReportMeasure)
+    private static string? MeasureTargetExpression(JsonElement target, TOM.Model model, Func<string, bool> useReportMeasure)
     {
         if (Str(target, "measure") is { Length: > 0 } name)
         {
-            if (FindMeasure(model, name) is null && !isReportMeasure(name))
+            if (FindMeasure(model, name) is null && !useReportMeasure(name))
                 throw new ExportRequestException(
                     $"Filter measure [{name}] was not found in the semantic model or the report's measures.");
             return $"[{EscBracket(name)}]";
@@ -384,11 +385,11 @@ internal sealed partial class DaxQueryBuilder
     /// the visual shows reuses its [m_i] column; any other is a filter-only [vf_i] column.
     /// </summary>
     private static void AddValueFilter(JsonElement filter, JsonElement target, TOM.Model model, List<MeasureField> measures,
-        Func<string, bool> isReportMeasure, FilterSet set, ClientTime time)
+        Func<string, bool> useReportMeasure, FilterSet set, ClientTime time)
     {
         string Literal(JsonElement v) => MeasureLiteral(v, time);
         if (!HasConditions(filter)) return; // a filter card with nothing set
-        var expr = MeasureTargetExpression(target, model, isReportMeasure)
+        var expr = MeasureTargetExpression(target, model, useReportMeasure)
             ?? throw Untranslatable(target, "its target isn't a measure or an aggregation of a column");
 
         var mi = measures.FindIndex(m => string.Equals(m.Expression, expr, StringComparison.OrdinalIgnoreCase));
@@ -405,13 +406,13 @@ internal sealed partial class DaxQueryBuilder
     }
 
     /// <summary>Top/Bottom N values of a column by a measure, ranked under the column filters.</summary>
-    private static void AddTopN(JsonElement filter, JsonElement target, TOM.Model model, Func<string, bool> isReportMeasure,
+    private static void AddTopN(JsonElement filter, JsonElement target, TOM.Model model, Func<string, bool> useReportMeasure,
         FilterSet set)
     {
         var count = TopNCount(filter);
         if (count <= 0 || !filter.TryGetProperty("orderBy", out var orderBy) || orderBy.ValueKind != JsonValueKind.Object)
             return; // not set
-        var order = MeasureTargetExpression(orderBy, model, isReportMeasure);
+        var order = MeasureTargetExpression(orderBy, model, useReportMeasure);
         var column = IsMeasureTarget(target) ? null : ResolveTargetColumn(target, model);
         if (column is null || order is null)
             throw new ExportRequestException(
