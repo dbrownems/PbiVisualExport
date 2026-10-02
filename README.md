@@ -1,5 +1,11 @@
 # PbiVisualExport
 
+> [!NOTE]
+> This is a **sample and reference implementation** for exporting Power BI visuals. It
+> shows one way to export all the data behind a visual. Adapt it to your app, and review
+> and test it against your own models, reports and security requirements before you use
+> it in production. [Known gaps](#known-gaps) lists what it doesn't handle yet.
+
 Export **all** the rows behind a visual in an embedded Power BI report to CSV,
 bypassing the row limits of Power BI's own "Export data". It ships as a module for an
 existing ASP.NET Core back end and HTML front end:

@@ -14,6 +14,9 @@ adds it with `AddPbiVisualExport()` + `MapPbiVisualExport("/pbi-export")`, and i
 HTML front end loads the JS client (served at `{prefix}/client.js`) next to the
 `Report` it already embeds.
 
+It's a **sample and reference implementation** for exporting Power BI visuals; the
+README and package README say so up front. Keep that framing in user-facing docs.
+
 The trick: the JS client gathers the visual's fields, active filters/slicers and
 sort via the **Power BI Client JS API** and posts them with the workspace and
 report **IDs**. The library resolves the dataset and all names from the workspace

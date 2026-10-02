@@ -15,6 +15,9 @@ loads the semantic model into **TOM**, builds **one DAX query**
 (`SUMMARIZECOLUMNS` + optional `FORMAT()`), runs it over the workspace **XMLA
 endpoint** (ADOMD.NET — no paging, no row caps), and streams the rows as CSV.
 
+It's a **sample and reference implementation** for exporting Power BI visuals.
+Docs should say so, and point to the README's *Known gaps*.
+
 ## Run it
 
 ```pwsh

@@ -7,6 +7,10 @@ over the workspace's **XMLA endpoint** and streams the rows to the browser as CS
 is no paging and no row cap, and memory stays flat: 2M rows × 31 columns took about 95 s
 using about 50 MB.
 
+This is a **sample and reference implementation** for exporting Power BI visuals. Adapt
+it to your app, and review and test it against your own models, reports and security
+requirements before you use it in production.
+
 There are two parts: an ASP.NET Core module (this package) and a browser client. The
 package embeds the client and serves it at `{prefix}/client.js`, so the client always
 matches the server's version.
