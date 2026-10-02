@@ -960,7 +960,9 @@ The repo is a **private** GitHub repo, `dbrownems/PbiVisualExport`. The root
    from a subset of that cascade (`infra/settings.ps1`), and model ids and the Warehouse host come from
    `{{…}}` tokens (see *Infra*). Only public client IDs (Azure CLI, Analysis
    Services) and PBIR lineage/sample GUIDs remain.
-2. **Git history**: the initial commit (`aa72a1d`) and later ones before the
-   settings refactor contain the old IDs. They're IDs, not secrets. Squash or
-   rewrite only if that matters, and only on explicit request.
+2. **Git history: done.** History was rewritten with `git filter-repo`. Old
+   environment IDs became placeholder GUIDs (`00000000-0000-0000-0000-0000000000NN`),
+   and the removed SalesAndReturns sample is gone from every commit. The one
+   exception is the binary `infra/samples/StoreSales.pbix`, which still embeds its
+   original dataset and report IDs. Those are IDs, not secrets.
 3. **`LICENSE`** (MIT, Copyright (c) Microsoft Corporation) is already present.

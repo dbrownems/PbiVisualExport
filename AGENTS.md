@@ -116,6 +116,8 @@ excludes these:
 
 App, tool and infra config no longer commit environment IDs. `infra/` resolves
 them at deploy time, via a subset of the settings cascade (`infra/settings.ps1`) and `{{SemanticModelId:…}}` /
-`{{WarehouseServer:…}}` tokens. Only git history still has the old ones. See
+`{{WarehouseServer:…}}` tokens. Git history was rewritten to replace the old ones
+with placeholders; only the binary `infra/samples/StoreSales.pbix` still embeds
+its original IDs. See
 "Before making this repo public" in
 [`.github/copilot-instructions.md`](.github/copilot-instructions.md).
