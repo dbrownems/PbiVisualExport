@@ -220,6 +220,54 @@ describe("slicers", () => {
         assert.ok(phases.includes("opening-page"));
     });
 
+    const countCaptures = report => {
+        const capture = report.bookmarksManager.capture;
+        const counter = { n: 0 };
+        report.bookmarksManager.capture = async (...a) => { counter.n++; return capture(...a); };
+        return counter;
+    };
+    // Functions, not constants: inCond is declared further down the module.
+    const regionEast = () => ({ Version: 2, From: [{ Name: "r", Entity: "Region", Type: 0 }], Where: [inCond("r", "RegionName", ["'East'"])] });
+    const slicerContainer = () => ({ singleVisual: { objects: { merge: { general: [{ properties: { filter: { filter: regionEast() } } }] } } } });
+
+    test("one bookmark capture serves every fallback and the sort", async () => {
+        const visual = mockVisual();
+        const slicer = mockVisual({ name: "s1", type: "slicer", getSlicerState: serializationFailed });
+        const orderBy = [{ Direction: 2, Expression: { Column: { Expression: { SourceRef: { Entity: "Sales" } }, Property: "Date" } } }];
+        const bookmarkState = await gzipBookmark({ explorationState: {
+            filters: { byExpr: [card("Sales", inCond("c", "Product", ["'Helmet'"]))] },
+            sections: { p1: { filters: { byExpr: [] }, visualContainers: { s1: slicerContainer(), v1: { singleVisual: { orderBy } } } } },
+        } });
+        const { exporter, report } = setup({ visual, pageVisuals: [visual, slicer], reportOpts: { bookmarkState } });
+        report.getFilters = rejectsUndefined;
+        const captures = countCaptures(report);
+        const req = await exporter.buildRequest(visual, { sort: true });
+        assert.equal(captures.n, 1);
+        assert.deepEqual(req.filters, [basic("Sales", "Product", "In", ["Helmet"]), basic("Region", "RegionName", "In", ["East"])]);
+        assert.deepEqual(req.sort, [{ table: "Sales", column: "Date", direction: "Descending" }]);
+    });
+
+    test("opening the page discards the bookmark captured before it", async () => {
+        let calls = 0;
+        const slicer = mockVisual({ name: "s1", type: "slicer", getSlicerState: async () => {
+            throw { message: calls++ === 0 ? "visualConfigIsNotInitialized" : "slicerSerializationFailed" };
+        } });
+        const visual = mockVisual();
+        const page = mockPage({ name: "p2", visuals: [visual, slicer] });
+        const bookmarkState = await gzipBookmark({ explorationState: {
+            filters: { byExpr: [] },
+            sections: { p2: { visualContainers: { s1: slicerContainer() } } },
+        } });
+        const report = mockReport({ pages: [mockPage({ name: "p0" }), page], bookmarkState });
+        report.getFilters = rejectsUndefined;
+        const captures = countCaptures(report);
+        const exporter = createExporter({ report, fetch: mockFetch({}), ...quiet });
+        const req = await exporter.buildRequest(visual);
+        assert.equal(page.activated, 1);
+        assert.equal(captures.n, 2);
+        assert.deepEqual(req.filters, [basic("Region", "RegionName", "In", ["East"])]);
+    });
+
     test("unreadable slicer with an In selection in the bookmark is translated", async () => {
         const visual = mockVisual();
         const slicer = mockVisual({ name: "s1", type: "slicer", getSlicerState: serializationFailed });

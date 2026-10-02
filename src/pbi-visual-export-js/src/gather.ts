@@ -75,13 +75,14 @@ export async function gatherFields(visual: PbiVisual): Promise<ExportField[]> {
  * can't be read either way aborts the export: dropping it would silently over-export.
  */
 export async function gatherFilters(report: PbiReport, page: PbiPage, visual: PbiVisual,
-    onOpeningPage: () => void, signal?: AbortSignal): Promise<PbiFilter[]> {
+    onOpeningPage: () => void, signal?: AbortSignal,
+    snapshot: BookmarkSnapshot = createBookmarkSnapshot(report)): Promise<PbiFilter[]> {
     const all: PbiFilter[] = [];
     const pushAll = (arr: unknown) => { if (Array.isArray(arr)) for (const f of arr) all.push(f); };
 
-    pushAll(await levelFilters("report", () => report.getFilters(), report, page, visual));
-    pushAll(await levelFilters("page", () => page.getFilters(), report, page, visual));
-    pushAll(await levelFilters("visual", () => visual.getFilters(), report, page, visual));
+    pushAll(await levelFilters("report", () => report.getFilters(), snapshot, page, visual));
+    pushAll(await levelFilters("page", () => page.getFilters(), snapshot, page, visual));
+    pushAll(await levelFilters("visual", () => visual.getFilters(), snapshot, page, visual));
 
     let visuals: PbiVisual[];
     try { visuals = await page.getVisuals(); }
@@ -109,6 +110,7 @@ export async function gatherFilters(report: PbiReport, page: PbiPage, visual: Pb
                     if ((await report.getActivePage()).name !== page.name) {
                         onOpeningPage();
                         await page.setActive();
+                        snapshot.invalidate();
                     }
                 }
                 await new Promise(r => setTimeout(r, 500));
@@ -120,7 +122,7 @@ export async function gatherFilters(report: PbiReport, page: PbiPage, visual: Pb
             // slicerSerializationFailed). The bookmark holds the same state as a
             // semantic-query filter: no filter there = no selection.
             const title = v.title && v.title.trim() ? v.title : v.name;
-            const fallback = await slicerStateFromBookmark(report, page, v);
+            const fallback = await slicerStateFromBookmark(snapshot, page, v);
             if (fallback === "no-filter") continue;
             if (Array.isArray(fallback)) { pushAll(fallback); continue; }
             throw new PbiExportError("slicerUnreadable",
@@ -142,7 +144,7 @@ type FilterLevel = "report" | "page" | "visual";
  * `.sections[page].visualContainers[visual].filters`).
  */
 async function levelFilters(level: FilterLevel, read: () => Promise<PbiFilter[]>,
-    report: PbiReport, page: PbiPage, visual: PbiVisual): Promise<PbiFilter[]> {
+    snapshot: BookmarkSnapshot, page: PbiPage, visual: PbiVisual): Promise<PbiFilter[]> {
     try {
         const filters = await read();
         return Array.isArray(filters) ? filters : [];
@@ -150,7 +152,7 @@ async function levelFilters(level: FilterLevel, read: () => Promise<PbiFilter[]>
         let holder: any;
         let fallback: PbiFilter[] | null = null;
         try {
-            const state = await captureExplorationState(report);
+            const state = await snapshot.get();
             const section = state?.sections?.[page.name];
             holder = level === "report" ? state : level === "page" ? section : section?.visualContainers?.[visual.name];
             if (holder) fallback = bookmarkFilters(holder.filters);
@@ -180,9 +182,9 @@ function bookmarkFilters(container: any): PbiFilter[] | null {
 
 // "no-filter" if the bookmark shows the slicer has no selection, the equivalent filters if
 // it can be translated, "filter" if it has another selection, null if it can't be determined.
-async function slicerStateFromBookmark(report: PbiReport, page: PbiPage, slicer: PbiVisual): Promise<PbiFilter[] | "filter" | "no-filter" | null> {
+async function slicerStateFromBookmark(snapshot: BookmarkSnapshot, page: PbiPage, slicer: PbiVisual): Promise<PbiFilter[] | "filter" | "no-filter" | null> {
     try {
-        const vc = (await captureVisualContainers(report, page))[slicer.name];
+        const vc = (await visualContainers(snapshot, page))[slicer.name];
         if (!vc || !vc.singleVisual) return null;
         const general = vc.singleVisual.objects?.merge?.general || [];
         const filters = general.map((g: any) => g?.properties?.filter).filter((f: any) => f);
@@ -303,8 +305,31 @@ async function captureExplorationState(report: PbiReport): Promise<any> {
     return (await decodeBookmarkState(bookmark.state || ""))?.explorationState;
 }
 
-async function captureVisualContainers(report: PbiReport, page: PbiPage): Promise<Record<string, any>> {
-    return (await captureExplorationState(report))?.sections?.[page.name]?.visualContainers || {};
+/**
+ * The report's bookmark exploration state, captured at most once per request and only when
+ * a fallback or the sort needs it. Activating a page invalidates it (slicers on a page that
+ * wasn't rendered may not be in the earlier capture); a failed capture is retried on the
+ * next `get()`.
+ */
+export interface BookmarkSnapshot { get(): Promise<any>; invalidate(): void }
+
+export function createBookmarkSnapshot(report: PbiReport): BookmarkSnapshot {
+    let memo: Promise<any> | undefined;
+    return {
+        get() {
+            if (!memo) {
+                const p = captureExplorationState(report);
+                memo = p;
+                p.catch(() => { if (memo === p) memo = undefined; });
+            }
+            return memo;
+        },
+        invalidate() { memo = undefined; },
+    };
+}
+
+async function visualContainers(snapshot: BookmarkSnapshot, page: PbiPage): Promise<Record<string, any>> {
+    return (await snapshot.get())?.sections?.[page.name]?.visualContainers || {};
 }
 
 /** A captured bookmark's `state`: base64 of gzip'd JSON ("H4sI...") or of plain JSON. */
@@ -343,10 +368,11 @@ export function mapOrderByExpression(x: any): Omit<ExportSort, "direction"> | nu
  * of a captured bookmark: the live sort (header clicks, `sortBy`) or, if unchanged, the
  * report's saved default. No `orderBy` = no explicit sort.
  */
-export async function gatherSort(report: PbiReport, page: PbiPage, visual: PbiVisual): Promise<{ sort: ExportSort[]; source: string }> {
+export async function gatherSort(report: PbiReport, page: PbiPage, visual: PbiVisual,
+    snapshot: BookmarkSnapshot = createBookmarkSnapshot(report)): Promise<{ sort: ExportSort[]; source: string }> {
     let orderBy: any;
     try {
-        orderBy = (await captureVisualContainers(report, page))[visual.name]?.singleVisual?.orderBy;
+        orderBy = (await visualContainers(snapshot, page))[visual.name]?.singleVisual?.orderBy;
     } catch (e) {
         return { sort: [], source: "unavailable: " + errorText(e) };
     }

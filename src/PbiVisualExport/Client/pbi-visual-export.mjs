@@ -126,14 +126,14 @@ async function gatherFields(visual) {
   }
   return fields;
 }
-async function gatherFilters(report, page, visual, onOpeningPage, signal) {
+async function gatherFilters(report, page, visual, onOpeningPage, signal, snapshot = createBookmarkSnapshot(report)) {
   const all = [];
   const pushAll = (arr) => {
     if (Array.isArray(arr)) for (const f of arr) all.push(f);
   };
-  pushAll(await levelFilters("report", () => report.getFilters(), report, page, visual));
-  pushAll(await levelFilters("page", () => page.getFilters(), report, page, visual));
-  pushAll(await levelFilters("visual", () => visual.getFilters(), report, page, visual));
+  pushAll(await levelFilters("report", () => report.getFilters(), snapshot, page, visual));
+  pushAll(await levelFilters("page", () => page.getFilters(), snapshot, page, visual));
+  pushAll(await levelFilters("visual", () => visual.getFilters(), snapshot, page, visual));
   let visuals;
   try {
     visuals = await page.getVisuals();
@@ -161,6 +161,7 @@ async function gatherFilters(report, page, visual, onOpeningPage, signal) {
           if ((await report.getActivePage()).name !== page.name) {
             onOpeningPage();
             await page.setActive();
+            snapshot.invalidate();
           }
         }
         await new Promise((r) => setTimeout(r, 500));
@@ -168,7 +169,7 @@ async function gatherFilters(report, page, visual, onOpeningPage, signal) {
     }
     if (!state) {
       const title = v.title && v.title.trim() ? v.title : v.name;
-      const fallback = await slicerStateFromBookmark(report, page, v);
+      const fallback = await slicerStateFromBookmark(snapshot, page, v);
       if (fallback === "no-filter") continue;
       if (Array.isArray(fallback)) {
         pushAll(fallback);
@@ -184,7 +185,7 @@ async function gatherFilters(report, page, visual, onOpeningPage, signal) {
   }
   return all;
 }
-async function levelFilters(level, read, report, page, visual) {
+async function levelFilters(level, read, snapshot, page, visual) {
   try {
     const filters = await read();
     return Array.isArray(filters) ? filters : [];
@@ -192,7 +193,7 @@ async function levelFilters(level, read, report, page, visual) {
     let holder;
     let fallback = null;
     try {
-      const state = await captureExplorationState(report);
+      const state = await snapshot.get();
       const section = state?.sections?.[page.name];
       holder = level === "report" ? state : level === "page" ? section : section?.visualContainers?.[visual.name];
       if (holder) fallback = bookmarkFilters(holder.filters);
@@ -220,9 +221,9 @@ function bookmarkFilters(container) {
   }
   return out;
 }
-async function slicerStateFromBookmark(report, page, slicer) {
+async function slicerStateFromBookmark(snapshot, page, slicer) {
   try {
-    const vc = (await captureVisualContainers(report, page))[slicer.name];
+    const vc = (await visualContainers(snapshot, page))[slicer.name];
     if (!vc || !vc.singleVisual) return null;
     const general = vc.singleVisual.objects?.merge?.general || [];
     const filters = general.map((g) => g?.properties?.filter).filter((f) => f);
@@ -322,8 +323,26 @@ async function captureExplorationState(report) {
   const bookmark = await report.bookmarksManager.capture({ allPages: true });
   return (await decodeBookmarkState(bookmark.state || ""))?.explorationState;
 }
-async function captureVisualContainers(report, page) {
-  return (await captureExplorationState(report))?.sections?.[page.name]?.visualContainers || {};
+function createBookmarkSnapshot(report) {
+  let memo;
+  return {
+    get() {
+      if (!memo) {
+        const p = captureExplorationState(report);
+        memo = p;
+        p.catch(() => {
+          if (memo === p) memo = void 0;
+        });
+      }
+      return memo;
+    },
+    invalidate() {
+      memo = void 0;
+    }
+  };
+}
+async function visualContainers(snapshot, page) {
+  return (await snapshot.get())?.sections?.[page.name]?.visualContainers || {};
 }
 async function decodeBookmarkState(state) {
   const bytes = Uint8Array.from(atob(state), (c) => c.charCodeAt(0));
@@ -351,10 +370,10 @@ function mapOrderByExpression(x) {
   }
   return null;
 }
-async function gatherSort(report, page, visual) {
+async function gatherSort(report, page, visual, snapshot = createBookmarkSnapshot(report)) {
   let orderBy;
   try {
-    orderBy = (await captureVisualContainers(report, page))[visual.name]?.singleVisual?.orderBy;
+    orderBy = (await visualContainers(snapshot, page))[visual.name]?.singleVisual?.orderBy;
   } catch (e) {
     return { sort: [], source: "unavailable: " + errorText(e) };
   }
@@ -685,16 +704,18 @@ var Exporter = class {
     report({ phase: "gathering", message: "Gathering visual configuration…" });
     const fields = await gatherFields(visual);
     throwIfAborted(options.signal);
+    const snapshot = createBookmarkSnapshot(this.report);
     const filters = await gatherFilters(
       this.report,
       page,
       visual,
       () => report({ phase: "opening-page", message: `Opening page “${page.displayName}” to read its slicers…` }),
-      options.signal
+      options.signal,
+      snapshot
     );
     throwIfAborted(options.signal);
     const applySort = options.sort === true;
-    const sortInfo = applySort ? await gatherSort(this.report, page, visual) : { sort: [], source: "not read (sort off)" };
+    const sortInfo = applySort ? await gatherSort(this.report, page, visual, snapshot) : { sort: [], source: "not read (sort off)" };
     const timeZone = browserTimeZone();
     return {
       workspaceId,

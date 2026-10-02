@@ -5,7 +5,7 @@
 //   button.onclick = () => exporter.exportVisual(visual, { onProgress: p => status.textContent = p.message });
 //   exporter.addVisualMenuCommand();   // "Export all data (CSV)" in every visual's "More options" menu
 import { PbiExportError, errorText, isAbort, throwIfAborted } from "./errors";
-import { SKIP_VISUAL_TYPES, browserTimeZone, gatherFields, gatherFilters, gatherSort, suggestedFileName, visualTitle } from "./gather";
+import { SKIP_VISUAL_TYPES, browserTimeZone, createBookmarkSnapshot, gatherFields, gatherFilters, gatherSort, suggestedFileName, visualTitle } from "./gather";
 import { ApiClient, readJson } from "./http";
 import { canPickFile, discardFile, downloadViaTicket, pickSaveFile, saveToFile } from "./transfer";
 import type {
@@ -96,12 +96,13 @@ export class Exporter {
         report({ phase: "gathering", message: "Gathering visual configuration\u2026" });
         const fields = await gatherFields(visual);
         throwIfAborted(options.signal);
+        const snapshot = createBookmarkSnapshot(this.report);
         const filters = await gatherFilters(this.report, page, visual,
             () => report({ phase: "opening-page", message: `Opening page \u201c${page.displayName}\u201d to read its slicers\u2026` }),
-            options.signal);
+            options.signal, snapshot);
         throwIfAborted(options.signal);
         const applySort = options.sort === true;
-        const sortInfo = applySort ? await gatherSort(this.report, page, visual) : { sort: [], source: "not read (sort off)" };
+        const sortInfo = applySort ? await gatherSort(this.report, page, visual, snapshot) : { sort: [], source: "not read (sort off)" };
         const timeZone = browserTimeZone();
         return {
             workspaceId, reportId,
