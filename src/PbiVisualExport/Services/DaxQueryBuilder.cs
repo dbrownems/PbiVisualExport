@@ -943,23 +943,13 @@ internal sealed class DaxQueryBuilder
         var vi = set.ValueMeasures.FindIndex(e => string.Equals(e, expr, StringComparison.OrdinalIgnoreCase));
         var colRef = mi >= 0 ? $"[m_{mi}]" : $"[vf_{(vi >= 0 ? vi : set.ValueMeasures.Count)}]";
 
-        var joiner = Eq(Str(filter, "logicalOperator"), "Or") ? " || " : " && ";
-        var preds = new List<string>();
-        var labels = new List<string>();
-        foreach (var cond in filter.GetProperty("conditions").EnumerateArray())
-        {
-            if (Eq(Str(cond, "operator"), "None")) continue;
-            var p = TranslateCondition(cond, colRef, Literal);
-            // Dropping one condition would change the rows either way (And: more, Or: fewer).
-            if (p is null) throw UnsupportedCondition(target, cond);
-            preds.Add(p);
-            labels.Add(TranslateCondition(cond, expr, Literal)!);
-        }
-        if (preds.Count == 0) return;
+        // The predicate filters the [m_i]/[vf_i] column; the description names the measure.
+        if (JoinConditions(filter, Literal, cond => UnsupportedCondition(target, cond), colRef, expr) is not { } joined)
+            return;
 
         if (mi < 0 && vi < 0) set.ValueMeasures.Add(expr);
-        set.ValuePredicates.Add(preds.Count == 1 ? preds[0] : "(" + string.Join(joiner, preds) + ")");
-        set.Descriptions.Add(string.Join(joiner, labels));
+        set.ValuePredicates.Add(joined.Count == 1 ? joined.On[0] : $"({joined.On[0]})");
+        set.Descriptions.Add(joined.On[1]);
     }
 
     /// <summary>Top/Bottom N values of a column by a measure, ranked under the column filters.</summary>
@@ -1141,21 +1131,11 @@ internal sealed class DaxQueryBuilder
         if (filterType == 0 || schema.Contains("advanced", StringComparison.OrdinalIgnoreCase) ||
             filter.TryGetProperty("conditions", out _))
         {
-            if (!filter.TryGetProperty("conditions", out var condsEl) || condsEl.ValueKind != JsonValueKind.Array)
-                return null;
-            var joiner = Eq(Str(filter, "logicalOperator"), "Or") ? " || " : " && ";
-            var preds = new List<string>();
-            foreach (var cond in condsEl.EnumerateArray())
-            {
-                if (Eq(Str(cond, "operator"), "None")) continue;
-                // Dropping one condition would change the rows either way (And: more, Or: fewer).
-                var p = TranslateCondition(cond, colRef, v => DaxLiteral(dataType, v, time))
-                    ?? throw new ExportRequestException(
-                        $"The filter on {colRef} could not be translated (the condition '{CondOperator(cond) ?? "?"}' isn't supported). {aborted}");
-                preds.Add(p);
-            }
-            if (preds.Count == 0) return null;
-            return $"FILTER(ALL({colRef}), {string.Join(joiner, preds)})";
+            var joined = JoinConditions(filter, v => DaxLiteral(dataType, v, time),
+                cond => new ExportRequestException(
+                    $"The filter on {colRef} could not be translated (the condition '{CondOperator(cond) ?? "?"}' isn't supported). {aborted}"),
+                colRef);
+            return joined is null ? null : $"FILTER(ALL({colRef}), {joined.On[0]})";
         }
 
         // Any other filter that selects something (identity, hierarchy...) can't be dropped.
@@ -1332,6 +1312,32 @@ internal sealed class DaxQueryBuilder
     }
 
     private static string DaxSet(IEnumerable<string> literals) => "{" + string.Join(", ", literals) + "}";
+
+    /// <summary>An advanced filter's set conditions, joined: <see cref="On"/>[i] is on the i-th subject.</summary>
+    private sealed record JoinedConditions(int Count, string[] On);
+
+    /// <summary>
+    /// The set conditions of an advanced filter (on a column or a measure value) as predicates on
+    /// each subject, joined with the filter's <c>logicalOperator</c> (And unless "Or"). Unset
+    /// ("None") conditions are skipped. A condition that can't be translated throws
+    /// <paramref name="unsupported"/>: dropping it would change the rows either way (And: more,
+    /// Or: fewer). Null when no condition is set.
+    /// </summary>
+    private static JoinedConditions? JoinConditions(JsonElement filter, Func<JsonElement, string> literal,
+        Func<JsonElement, Exception> unsupported, params string[] subjects)
+    {
+        if (!filter.TryGetProperty("conditions", out var conds) || conds.ValueKind != JsonValueKind.Array) return null;
+        var preds = subjects.Select(_ => new List<string>()).ToArray();
+        foreach (var cond in conds.EnumerateArray())
+        {
+            if (Eq(Str(cond, "operator"), "None")) continue;
+            for (var i = 0; i < subjects.Length; i++)
+                preds[i].Add(TranslateCondition(cond, subjects[i], literal) ?? throw unsupported(cond));
+        }
+        if (preds[0].Count == 0) return null;
+        var joiner = Eq(Str(filter, "logicalOperator"), "Or") ? " || " : " && ";
+        return new JoinedConditions(preds[0].Count, preds.Select(p => string.Join(joiner, p)).ToArray());
+    }
 
     private static string? TranslateCondition(JsonElement cond, string colRef, Func<JsonElement, string> literal)
     {
