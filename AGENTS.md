@@ -56,7 +56,9 @@ library and served at `{prefix}/client.js`). The sample host shows the wiring.
   regenerate), unit tests, and endpoint tests (`WebApplication` + `UseTestServer`
   with fakes). Fixtures load from `infra/models` and `infra/reports`.
 - `samples/PbiVisualExport.SampleHost/` — reference host (embedding is the host's job).
-- `infra/` — Fabric TMDL/PBIR test artifacts and scripts: `deploy-model.ps1`
+- `infra/` — Fabric TMDL/PBIR test artifacts and scripts: `deploy-all.ps1`
+  (deploys the Warehouse, models and reports to a workspace and refreshes them;
+  rerunnable, updates in place), `deploy-model.ps1`
   (workspace from a subset of the settings cascade via `settings.ps1`; `{{…}}`
   tokens resolved at deploy time), `generate-large-export.py`, `compare-exports.py`.
 - `tools/` — `WhSql` (seed a Warehouse).

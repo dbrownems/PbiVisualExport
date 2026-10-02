@@ -673,12 +673,27 @@ both together, and bump the version on a breaking wire change.
 
 ## Infra & Fabric authoring (`infra/`)
 
+- **`deploy-all.ps1`** deploys **every** sample item to a workspace in one go:
+  `[-Workspace <id>] [-SkipSeed] [-SkipStoreSalesImport] [-SkipRefresh] [-WhatIf]`.
+  Steps: create the Warehouse `ExportTestWH` if missing and seed it
+  (`tools/WhSql/seed.sql`, drops and recreates its tables); import
+  `infra/samples/StoreSales.pbix` if the `StoreSales` model is missing (a PBIX
+  import with data; its source is unreachable, so it's never refreshed); publish
+  `infra/models/*`, then `infra/reports/*` through `deploy-model.ps1`; refresh
+  FieldParamTest, DqParamReport and LargeExportTest (~85 s, the 2M-row table).
+  Items are matched by their `.platform` display name and **updated in place**
+  when they exist (IDs, so embed URLs, are kept), so reruns are safe; use
+  `-SkipSeed` on reruns. A refresh that fails on credentials (DqParamReport reads
+  the Warehouse over DirectQuery) needs the credentials set once in the service.
+  There is no Lakehouse; all source data is in the Warehouse.
 - **`deploy-model.ps1`** deploys a TMDL/PBIR folder as a Fabric item:
   `-Folder <dir> -DisplayName <name> -Kind semanticModels|reports [-Workspace <id>] [-WhatIf]`.
   It base64-encodes every part, POSTs `createItemWithDefinition`, polls the LRO,
   and prints the new item id. With `-ItemId <id>` it instead updates that item in
   place (`updateDefinition`); add `-UpdateMetadata` to also apply the `.platform`
   (e.g. a changed description). Uses `az account get-access-token --resource https://api.fabric.microsoft.com`.
+  The POST is retried (3 attempts) on 5xx/429; the service sometimes returns a
+  transient 500. Any failure (including an LRO that doesn't succeed) throws.
   - **Workspace** defaults to the `PowerBI:WorkspaceId` setting, read by
     **`infra/settings.ps1`** from a subset of the app's cascade (see
     *Configuration*): env var `PowerBI__WorkspaceId` > user secrets (read in any
@@ -695,13 +710,12 @@ both together, and bump the version on a breaking wire change.
     | `{{SemanticModelId:<name>}}` | the semantic model's id (`/semanticModels`) | every `reports/*/definition.pbir` `byConnection.pbiModelDatabaseName` |
     | `{{WarehouseServer:<name>}}` | the Warehouse's `properties.connectionString` host (`/warehouses`) | `models/DqParamTest/definition/expressions.tmdl` (`WhServer`) |
 
-    So a **fresh workspace** needs no file edits. Create the Warehouse (seed it with
-    `tools/WhSql`), deploy the models, then the reports. The only thing that must
-    line up is the model's display name. **Gotcha:** the `models/DqParamTest`
-    folder's `.platform` says `DqParamTest`, but the deployed model is named
-    **`DqParamReport`**. That's why `DqParamReport`'s pbir references
-    `{{SemanticModelId:DqParamReport}}`. Keep the two consistent if you redeploy
-    with a new name.
+    So a **fresh workspace** needs no file edits: run `deploy-all.ps1` (or, by
+    hand: create and seed the Warehouse, deploy the models, then the reports). The
+    only thing that must line up is the model's display name. **Gotcha:** the
+    `models/DqParamTest` folder deploys as **`DqParamReport`** (its `.platform`
+    displayName), which is why `DqParamReport`'s pbir references
+    `{{SemanticModelId:DqParamReport}}`. Keep the two consistent if you rename it.
   - `infra/settings.ps1` is dot-sourceable from any script: `Get-PbiSetting
     'PowerBI:WorkspaceId' -Required`, or `Resolve-PbiSetting <key>` for
     `{Value, Source}`. It is Windows PowerShell 5.1-compatible, like the rest of
@@ -788,7 +802,7 @@ both together, and bump the version on a breaking wire change.
 | Export throughput / memory | `infra/perf-export.ps1`, `CsvExportService.ReadOnlyAsync` (`POST {prefix}/bench`) |
 | Sample page, report list / embed token | `samples/PbiVisualExport.SampleHost` (`wwwroot/js/app.js`, `Services/PbiEmbedService.cs`, `Controllers/EmbedInfoController.cs`) |
 | Tests / CI / packaging | `tests/PbiVisualExport.Tests`, `src/pbi-visual-export-js/test`, `.github/workflows/ci.yml`, library csproj |
-| Deploy a model/report to Fabric | `infra/deploy-model.ps1` |
+| Deploy the sample items to Fabric | `infra/deploy-all.ps1` (everything) / `infra/deploy-model.ps1` (one item) |
 
 ## Conventions
 

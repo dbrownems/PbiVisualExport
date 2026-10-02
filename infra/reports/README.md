@@ -6,7 +6,9 @@ here is enhanced PBIR — `definition/pages/**/visuals/**/visual.json` per visua
 never a single legacy `report.json` blob — so report design is **inspectable**
 (see the *Report-level measures* note below).
 
-Deploy or update any of these with `infra/deploy-model.ps1 -Kind reports`, which
+To deploy everything (Warehouse, models, reports, refresh) to a workspace, run
+`infra/deploy-all.ps1`; it matches items by display name and updates existing ones
+in place. Deploy or update a single report with `infra/deploy-model.ps1 -Kind reports`, which
 base64-encodes every part under the folder. The target workspace comes from the
 `PowerBI:WorkspaceId` setting (user secrets or `PowerBI__WorkspaceId`), unless you
 pass `-Workspace`. To **replace an existing report in
@@ -33,7 +35,7 @@ a new report.
 > duplicate names fail the deploy up front. Otherwise the service returns
 > `PowerBIEntityNotFound` on `updateDefinition`. Use `-WhatIf` to see the
 > resolved ids without deploying. The `DqParamTest` model folder deploys as
-> **`DqParamReport`** (its `.platform` name differs), which is why that report's
+> **`DqParamReport`** (its `.platform` displayName), which is why that report's
 > token names `DqParamReport`.
 
 Each report's `.platform` carries a `metadata.displayName` **and** a
