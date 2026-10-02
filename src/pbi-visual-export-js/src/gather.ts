@@ -83,8 +83,13 @@ export async function gatherFilters(report: PbiReport, page: PbiPage, visual: Pb
     pushAll(await levelFilters("page", () => page.getFilters(), report, page, visual));
     pushAll(await levelFilters("visual", () => visual.getFilters(), report, page, visual));
 
-    let visuals: PbiVisual[] = [];
-    try { visuals = await page.getVisuals(); } catch { /* no slicers readable */ }
+    let visuals: PbiVisual[];
+    try { visuals = await page.getVisuals(); }
+    catch (e) {
+        throw new PbiExportError("slicerUnreadable",
+            `Couldn't list the page's visuals to read its slicers (${errorText(e)}). ` +
+            "Export aborted rather than ignoring them.", { cause: e });
+    }
     let activated = false;
     for (const v of visuals) {
         if (v.type !== "slicer") continue;

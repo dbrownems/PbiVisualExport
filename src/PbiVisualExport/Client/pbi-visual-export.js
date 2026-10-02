@@ -163,10 +163,15 @@ var PbiVisualExport = (() => {
     pushAll(await levelFilters("report", () => report.getFilters(), report, page, visual));
     pushAll(await levelFilters("page", () => page.getFilters(), report, page, visual));
     pushAll(await levelFilters("visual", () => visual.getFilters(), report, page, visual));
-    let visuals = [];
+    let visuals;
     try {
       visuals = await page.getVisuals();
-    } catch {
+    } catch (e) {
+      throw new PbiExportError(
+        "slicerUnreadable",
+        `Couldn't list the page's visuals to read its slicers (${errorText(e)}). Export aborted rather than ignoring them.`,
+        { cause: e }
+      );
     }
     let activated = false;
     for (const v of visuals) {

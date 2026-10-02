@@ -157,6 +157,16 @@ describe("slicers", () => {
         await rejectsWith(exporter.buildRequest(visual), "slicerUnreadable");
     });
 
+    test("page visuals that can't be listed abort the export", async () => {
+        const { exporter, visual, page } = setup();
+        page.getVisuals = async () => { throw { message: "boom" }; };
+        await assert.rejects(exporter.buildRequest(visual), e => {
+            assert.equal(e.code, "slicerUnreadable");
+            assert.match(e.message, /boom/);
+            return true;
+        });
+    });
+
     // The bookmark filter of a slicer after clicking "Select all", as captured from Power BI.
     const anyValue = (table, column, source) => ({
         Version: 2,

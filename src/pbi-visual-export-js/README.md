@@ -130,7 +130,7 @@ Failures reject with a `PbiExportError`, which has a `code`:
 |---|---|
 | `http` | The server refused. See `status` (400 bad request, 403 not allowed, 429 too many exports) and `problems`. |
 | `signInRequired` | Dev only: the server needs an XMLA device-code sign-in. Show `signIn.verificationUri` and `signIn.userCode`, `await exporter.waitForSignIn()`, then retry. |
-| `slicerUnreadable` | A slicer's selection couldn't be read. The client stops rather than export too many rows. |
+| `slicerUnreadable` | A slicer's selection (or the page's list of visuals, needed to find its slicers) couldn't be read. The client stops rather than export too many rows. |
 | `filtersUnreadable` | The report, page or visual filters couldn't be read, from the SDK or from the bookmark. The client stops rather than export too many rows. |
 | `authoringApiMissing` | `powerbi-report-authoring` isn't loaded. |
 | `noFields`, `missingIds`, `pickerUnavailable`, `network`, `downloadFailed`, `aborted` | See `src/errors.ts`. |

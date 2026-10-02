@@ -5,7 +5,7 @@ export type PbiExportErrorCode =
     | "signInRequired"
     /** No columns or measures were found on the visual. */
     | "noFields"
-    /** A slicer's selection couldn't be read; exporting without it would over-export. */
+    /** A slicer's selection (or the page's visual list) couldn't be read; exporting without it would over-export. */
     | "slicerUnreadable"
     /** Report, page or visual filters couldn't be read; exporting without them would over-export. */
     | "filtersUnreadable"
