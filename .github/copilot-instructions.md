@@ -298,18 +298,20 @@ _sample/                                   upstream MS "Embed for your customers
       `.sections[page].filters`, `.sections[page].visualContainers[visual].filters`
       (`byExpr[]`; a card with no selection has no `filter`). An unreadable bookmark or
       untranslatable card aborts (`filtersUnreadable`).
-    - **Bookmark translation** (`queryFilters`, one basic filter per `Where`
-      condition): `Comparison` (`ComparisonKind 0`) of a column with `AnyValue` =
+    - **Bookmark translation** (`queryFilters`, one filter (basic or tuple) per
+      `Where` condition): `Comparison` (`ComparisonKind 0`) of a column with `AnyValue` =
       "Select all" (slicer or filter-pane card on a column bound to a dynamic M
       parameter), sent as `{ operator: "All", values: [], selectAll: true }` (the
       marker is needed: an SDK `All` filter can't be told apart from no selection);
-      `In` / `Not(In)` over one column with literal rows = `In` / `NotIn`. Literals:
+      `In` / `Not(In)` over one column with literal rows = `In` / `NotIn`; over several
+      columns (how a bookmark stores a hierarchy slicer's selection) = a tuple filter
+      (`filterType 6`) with `In` / `NotIn`. Literals:
       `'text'` (`''` escapes), `3L`, `1.5D`/`1.5M`, `true`/`false`, `null`,
       `datetime'2024-01-11T00:00:00'` (report-local wall time, no offset; the server's
       `ClientTime` reads it as is). A number a JS double can't hold exactly (an integer
       beyond 2^53, too many digits, exponent notation) is sent as text, and the server
-      parses it by the column's type (`DaxLiteral` → `NumericLiteral`). Measure/comparison/Top N/relative-date conditions,
-      tuples and subqueries aren't translated (abort).
+      parses it by the column's type (`DaxLiteral` → `NumericLiteral`). Measure/comparison/Top N/relative-date conditions
+      and subqueries aren't translated (abort).
     - **Time zone** (`browserTimeZone`): the browser's IANA zone, sent as `timeZone`.
       The SDK serializes date filter values with `toISOString()` — the local wall time
       as a UTC instant (local 2024-02-01 00:00 at UTC-6 → `…T06:00:00.000Z`) — and the
@@ -672,10 +674,11 @@ both together, and bump the version on a breaking wire change.
   and prints the new item id. With `-ItemId <id>` it instead updates that item in
   place (`updateDefinition`); add `-UpdateMetadata` to also apply the `.platform`
   (e.g. a changed description). Uses `az account get-access-token --resource https://api.fabric.microsoft.com`.
-  - **Workspace** defaults to the `PowerBI:WorkspaceId` setting through the same
-    cascade as the app (see *Configuration*), via **`infra/settings.ps1`**: env var
-    `PowerBI__WorkspaceId` > user secrets > web `appsettings.json`. Pass
-    `-Workspace` to override it. The script prints which workspace it used.
+  - **Workspace** defaults to the `PowerBI:WorkspaceId` setting, read by
+    **`infra/settings.ps1`** from a subset of the app's cascade (see
+    *Configuration*): env var `PowerBI__WorkspaceId` > user secrets (read in any
+    environment) > the sample's `appsettings.json`; the first non-blank value wins.
+    Pass `-Workspace` to override it. The script prints which workspace it used.
   - **Deploy-time tokens** keep environment IDs out of `infra/`. Text parts are
     scanned; tokens are resolved **by display name in the target workspace** and
     substituted in the upload payload only. Files on disk are never rewritten.
@@ -925,7 +928,7 @@ The repo is a **private** GitHub repo, `dbrownems/PbiVisualExport`. The root
 1. **App and infra config: done.** `appsettings.json` reads environment IDs
    from user secrets or env vars (see
    *Configuration*). `infra/` resolves them at deploy time: the workspace comes
-   from the same cascade, and model ids and the Warehouse host come from
+   from a subset of that cascade (`infra/settings.ps1`), and model ids and the Warehouse host come from
    `{{…}}` tokens (see *Infra*). Only public client IDs (Azure CLI, Analysis
    Services) and PBIR lineage/sample GUIDs remain.
 2. **Git history**: the initial commit (`aa72a1d`) and later ones before the

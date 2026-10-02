@@ -46,47 +46,25 @@ ASP.NET Core app adds with `services.AddPbiVisualExport(config)` +
 library and served at `{prefix}/client.js`). The sample host shows the wiring.
 
 - `PbiVisualExport.sln` — library + sample + tests.
-- `src/PbiVisualExport/` — the library (multi-targets net8.0/net10.0).
-  - `PbiVisualExportServiceCollectionExtensions.cs` — DI (`AddPbiVisualExport`,
-    builder: `UseCredential`, `AddAuthorizer`, `AddEffectiveIdentity`, `AddAuditSink`) + options validation.
-  - `ExportEndpoints.cs` — `MapPbiVisualExport` route group (`csv`, `prepare`,
-    `download/{ticket}`, `download/{ticket}/status`, `xmla-auth`, `bench`, `client.js`).
-  - `Extensibility.cs` — public seams (authorizer, effective identity, audit sink).
-  - `PbiVisualExportOptions.cs`, `Models.cs` — options + request/response contract.
-  - `Services/ExportHandler.cs` — endpoint logic (streaming, tickets, errors, audit).
-  - `Services/ExportRequestResolver.cs` — validates a request (workspace allow-list,
-    ID/name agreement, authorizers) before any data is read.
-  - `Services/VisualFieldValidator.cs` — checks requested fields against the saved
-    visual in the report definition (`Export:FieldValidation`, default `Strict`).
-  - `Services/DownloadTickets.cs` — one-time download tickets + concurrency limiter.
-  - `Services/DaxQueryBuilder.cs` — request + TOM → single DAX query (the core logic).
-  - `Services/SemanticModelMetadataService.cs` — Fabric `getDefinition(TMSL)` → TOM.
-  - `Services/MetadataCache.cs` — in-memory + single-flight + on-disk TOM cache (`MetadataCache` config).
-  - `Services/CsvExportService.cs` — orchestrates; streams the XMLA reader to CSV.
-  - `Services/XmlaConnectionFactory.cs` — ADOMD.NET connections (XMLA takes **names**, not IDs).
-  - `Services/ReportDefinitionService.cs` — PBIR report definition (report measures).
-  - `Services/PowerBiCatalog.cs` — cached ID → name lookups (REST, no SDK dependency).
-  - `Auth/PbiTokenProvider.cs` — one credential, PBI vs Fabric token audiences.
-  - `Auth/XmlaTokenProvider.cs` — XMLA credential (`Shared` for SP, device code in dev).
-  - `Client/` — the **generated** JS bundles (embedded resources; don't hand-edit).
-- `src/pbi-visual-export-js/` — the TypeScript client (`createExporter`, `listVisuals`,
-  `buildRequest`, `exportVisual`); esbuild → `dist/` + `src/PbiVisualExport/Client/`.
-- `tests/PbiVisualExport.Tests/` — xUnit: DAX builder + golden `.dax` files
-  (`UPDATE_GOLDEN=1` to regenerate), resolver, validator, tickets, options, endpoints
-  (`WebApplicationFactory` with fakes). Fixtures load from `infra/models`/`infra/reports`.
+- `src/PbiVisualExport/` — the library (net8.0 + net10.0): DI/endpoint extensions,
+  options, `Extensibility.cs` seams, `Services/` (export pipeline; the core is
+  `DaxQueryBuilder.cs`), `Auth/` (token providers), `Client/` (**generated** JS
+  bundles; don't hand-edit).
+- `src/pbi-visual-export-js/` — the TypeScript client; `npm run build` writes `dist/`
+  and the library's `Client/` bundles.
+- `tests/PbiVisualExport.Tests/` — xUnit: golden `.dax` files (`UPDATE_GOLDEN=1` to
+  regenerate), unit tests, and endpoint tests (`WebApplication` + `UseTestServer`
+  with fakes). Fixtures load from `infra/models` and `infra/reports`.
 - `samples/PbiVisualExport.SampleHost/` — reference host (embedding is the host's job).
-  - `Program.cs` — the wiring; note `UseRouting()` → `UseAuthorization()` order.
-  - `Services/PbiEmbedService.cs`, `Controllers/EmbedInfoController.cs` —
-    `/embedinfo/reports`, `/embedinfo/getembedinfo?reportId=` (embed tokens).
-  - `wwwroot/js/app.js` + `Views/Home/Index.cshtml` — front end + debug panel.
-- `infra/` — Fabric TMDL/PBIR authoring; `deploy-model.ps1` deploys models/reports
-  (workspace from the settings cascade via `settings.ps1`; resolves
-  `{{SemanticModelId:…}}` / `{{WarehouseServer:…}}` tokens at deploy time; supports `-WhatIf`);
-  `generate-large-export.py` generates the 2M-row test model + report;
-  `compare-exports.py` diffs API vs native exports.
-  Test reports are modern enhanced PBIR — see `infra/reports/README.md`.
+- `infra/` — Fabric TMDL/PBIR test artifacts and scripts: `deploy-model.ps1`
+  (workspace from a subset of the settings cascade via `settings.ps1`; `{{…}}`
+  tokens resolved at deploy time), `generate-large-export.py`, `compare-exports.py`.
 - `tools/` — `WhSql` (seed a Warehouse).
-- `_sample/` — untouched Microsoft "Embed for your customers/AppOwnsData" clone (reference only; git-ignored, not committed).
+- `_sample/` — untouched Microsoft "Embed for your customers/AppOwnsData" clone
+  (reference only; git-ignored).
+
+File-by-file detail: the guide's *Repository layout* and *Task → file map*; test
+reports: `infra/reports/README.md`.
 
 ## Rules of the road
 
@@ -131,7 +109,7 @@ excludes these:
 ## ⚠️ Before making this repo public
 
 App, tool and infra config no longer commit environment IDs. `infra/` resolves
-them at deploy time, via the settings cascade and `{{SemanticModelId:…}}` /
+them at deploy time, via a subset of the settings cascade (`infra/settings.ps1`) and `{{SemanticModelId:…}}` /
 `{{WarehouseServer:…}}` tokens. Only git history still has the old ones. See
 "Before making this repo public" in
 [`.github/copilot-instructions.md`](.github/copilot-instructions.md).

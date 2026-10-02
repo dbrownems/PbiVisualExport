@@ -3,12 +3,14 @@
 #     . "$PSScriptRoot\settings.ps1"
 #     $ws = Get-PbiSetting 'PowerBI:WorkspaceId' -Required
 #
-# It mirrors the sample host's cascade, highest precedence first. Explicit script
-# parameters beat all of these; callers only use Get-PbiSetting when a
-# parameter wasn't passed.
+# It reads a subset of the sample host's cascade, highest precedence first; the
+# first non-empty (not blank) value wins. Explicit script parameters beat all of
+# these; callers only use Get-PbiSetting when a parameter wasn't passed.
 #   1. Environment variable   (PowerBI__WorkspaceId, ':' -> '__')
 #   2. .NET user secrets      (the sample host's <UserSecretsId>; dotnet user-secrets set ...)
+#                             Always read, unlike the host, which loads them in Development only.
 #   3. samples/PbiVisualExport.SampleHost/appsettings.json (committed; IDs are empty there)
+# appsettings.{Environment}.json and command-line arguments are not read.
 # Works in Windows PowerShell 5.1 and PowerShell 7+.
 
 $script:PbiRepoRoot = Split-Path $PSScriptRoot -Parent
