@@ -278,7 +278,9 @@ function conditionFilter(cond: any, from: Record<string, string>): PbiFilter | n
 /**
  * A semantic-query literal as a filter value, or undefined if unsupported: `'text'` (quotes
  * doubled), `3L`, `1.5D`/`1.5M`, `true`, `null`, `datetime'2024-01-11T00:00:00'`. Date/time
- * literals are report-local wall time with no offset, which the server reads as such.
+ * literals are report-local wall time with no offset, which the server reads as such. A number
+ * whose text doesn't survive a round trip through a JS double (too many digits, or exponent
+ * notation) is returned as text; the server parses it exactly by the column's type.
  */
 function literalValue(x: any): string | number | boolean | null | undefined {
     const s = x?.Literal?.Value;
@@ -290,7 +292,7 @@ function literalValue(x: any): string | number | boolean | null | undefined {
     m = /^(-?\d+)L$/.exec(s);
     if (m) { const n = Number(m[1]); return Number.isSafeInteger(n) ? n : m[1]; }
     m = /^(-?(?:\d+\.?\d*|\.\d+)(?:E[+-]?\d+)?)[DM]$/i.exec(s);
-    if (m) return Number(m[1]);
+    if (m) { const n = Number(m[1]); return String(n) === m[1] ? n : m[1]; }
     m = /^(?:datetime|date)'([^']*)'$/.exec(s);
     return m ? m[1] : undefined;
 }

@@ -1388,9 +1388,8 @@ internal sealed class DaxQueryBuilder
             case TOM.DataType.Double:
             case TOM.DataType.Decimal:
                 if (value.ValueKind == JsonValueKind.Number) return value.GetRawText();
-                if (value.ValueKind == JsonValueKind.String &&
-                    double.TryParse(value.GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var d))
-                    return d.ToString(CultureInfo.InvariantCulture);
+                if (value.ValueKind == JsonValueKind.String)
+                    return NumericLiteral(dataType, value.GetString() ?? "") ?? QuoteString(value.GetString() ?? "");
                 return QuoteString(value.ToString());
 
             case TOM.DataType.Boolean:
@@ -1406,6 +1405,21 @@ internal sealed class DaxQueryBuilder
             default:
                 return QuoteString(value.ValueKind == JsonValueKind.String ? value.GetString() ?? "" : value.ToString());
         }
+    }
+
+    /// <summary>
+    /// A numeric value sent as text (the client does that when a number doesn't fit a JS double),
+    /// parsed as the column's type so it stays exact: a double would turn 9007199254741113 into
+    /// …112. Null if it isn't a number.
+    /// </summary>
+    private static string? NumericLiteral(TOM.DataType dataType, string s)
+    {
+        var inv = CultureInfo.InvariantCulture;
+        if (dataType == TOM.DataType.Int64 && long.TryParse(s, NumberStyles.Integer, inv, out var l))
+            return l.ToString(inv);
+        if (dataType == TOM.DataType.Decimal && decimal.TryParse(s, NumberStyles.Float, inv, out var m))
+            return m.ToString(inv);
+        return double.TryParse(s, NumberStyles.Float, inv, out var d) && double.IsFinite(d) ? d.ToString("R", inv) : null;
     }
 
     /// <summary><c>DATE(y, m, d)</c>, plus <c>+ TIME(h, m, s)</c> when the value has a time of day.</summary>

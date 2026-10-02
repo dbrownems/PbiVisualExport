@@ -301,7 +301,9 @@ _sample/                                   upstream MS "Embed for your customers
       `In` / `Not(In)` over one column with literal rows = `In` / `NotIn`. Literals:
       `'text'` (`''` escapes), `3L`, `1.5D`/`1.5M`, `true`/`false`, `null`,
       `datetime'2024-01-11T00:00:00'` (report-local wall time, no offset; the server's
-      `ClientTime` reads it as is). Measure/comparison/Top N/relative-date conditions,
+      `ClientTime` reads it as is). A number a JS double can't hold exactly (an integer
+      beyond 2^53, too many digits, exponent notation) is sent as text, and the server
+      parses it by the column's type (`DaxLiteral` → `NumericLiteral`). Measure/comparison/Top N/relative-date conditions,
       tuples and subqueries aren't translated (abort).
     - **Time zone** (`browserTimeZone`): the browser's IANA zone, sent as `timeZone`.
       The SDK serializes date filter values with `toISOString()` — the local wall time

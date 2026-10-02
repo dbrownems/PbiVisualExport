@@ -227,6 +227,24 @@ public class DaxQueryBuilderTests
     }
 
     [Fact]
+    public void NumericFilterLiterals_SentAsText_ArePreservedExactly()
+    {
+        var r = Samples.Request(Samples.Column("Sales", "Region"));
+        r.Filters.Add(Fixtures.Filter(Basic("Month Number", "In",
+            """["9007199254741113", "9223372036854775807", "-9223372036854775808"]""")));
+        r.Filters.Add(Fixtures.Filter(Basic("Amount", "In", """["12345678901234567.89"]""")));
+        r.Filters.Add(Fixtures.Filter(Advanced("""{"table":"Sales","column":"Month Number"}""", "And",
+            """[{"operator":"Is","value":"9007199254741113"}]""")));
+        r.Filters.Add(Fixtures.Filter(Basic("Month Number", "In", """["abc"]""")));
+        var q = Build(r).BuildQuery();
+
+        Assert.Contains("VAR _f0 = TREATAS({9007199254741113, 9223372036854775807, -9223372036854775808}, 'Sales'[Month Number])", q);
+        Assert.Contains("VAR _f1 = TREATAS({12345678901234567.89}, 'Sales'[Amount])", q);
+        Assert.Contains("VAR _f2 = FILTER(ALL('Sales'[Month Number]), 'Sales'[Month Number] = 9007199254741113)", q);
+        Assert.Contains("VAR _f3 = TREATAS({\"abc\"}, 'Sales'[Month Number])", q);
+    }
+
+    [Fact]
     public void EmptyFilters_AreSkipped()
     {
         var r = Samples.Request(Samples.Column("Sales", "Region"));

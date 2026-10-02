@@ -311,7 +311,10 @@ function literalValue(x) {
     return Number.isSafeInteger(n) ? n : m[1];
   }
   m = /^(-?(?:\d+\.?\d*|\.\d+)(?:E[+-]?\d+)?)[DM]$/i.exec(s);
-  if (m) return Number(m[1]);
+  if (m) {
+    const n = Number(m[1]);
+    return String(n) === m[1] ? n : m[1];
+  }
   m = /^(?:datetime|date)'([^']*)'$/.exec(s);
   return m ? m[1] : void 0;
 }

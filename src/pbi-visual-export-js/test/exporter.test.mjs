@@ -346,7 +346,7 @@ describe("filter cards the SDK can't read", () => {
         const reportCards = [card("Sales", notInCond("c", "Category", ["'Clothing'"]))];
         const visualCards = [
             card("Sales", inCond("c", "Quantity", ["3L", "90071992547409930L"])),
-            card("Sales", inCond("c", "Amount", ["419.88D", "1.5M", "-2E+3D"])),
+            card("Sales", inCond("c", "Amount", ["419.88D", "1.5M", "-2E+3D", "12345678901234567.89D"])),
             card("Sales", inCond("c", "Flag", ["true", "false", "null"])),
             card("Sales", inCond("c", "SaleDate", ["datetime'2024-01-11T00:00:00'"])),
             card("CategoryPicker", notInCond("c", "CategoryChoice", [])),
@@ -361,7 +361,8 @@ describe("filter cards the SDK can't read", () => {
             basic("Sales", "Category", "NotIn", ["Clothing"]),
             basic("T", "P", "In", ["p"]),
             basic("Sales", "Quantity", "In", [3, "90071992547409930"]),
-            basic("Sales", "Amount", "In", [419.88, 1.5, -2000]),
+            // Numbers that don't round-trip through a JS double stay as text (parsed by column type on the server).
+            basic("Sales", "Amount", "In", [419.88, 1.5, "-2E+3", "12345678901234567.89"]),
             basic("Sales", "Flag", "In", [true, false, null]),
             basic("Sales", "SaleDate", "In", ["2024-01-11T00:00:00"]),
             basic("CategoryPicker", "CategoryChoice", "NotIn", []),
