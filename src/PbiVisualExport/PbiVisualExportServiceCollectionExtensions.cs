@@ -62,7 +62,6 @@ public static class PbiVisualExportServiceCollectionExtensions
         services.TryAddSingleton<SemanticModelMetadataService>();
         services.TryAddSingleton<ReportDefinitionService>();
         services.TryAddSingleton<DaxQueryBuilder>();
-        services.TryAddSingleton<DownloadTicketStore>();
         services.TryAddSingleton<ExportConcurrencyLimiter>();
         services.TryAddSingleton<IVisualExportAuthorizer, AllowListAuthorizer>();
         services.TryAddScoped<ExportRequestResolver>();
@@ -133,7 +132,6 @@ internal sealed class PbiVisualExportOptionsValidator : IValidateOptions<PbiVisu
         }
         if (string.IsNullOrWhiteSpace(o.XmlaEndpoint)) problems.Add($"{s}:XmlaEndpoint is required.");
         if (o.AllowedWorkspaceIds.Contains(Guid.Empty)) problems.Add($"{s}:AllowedWorkspaceIds contains an empty GUID.");
-        if (o.Downloads.TicketLifetimeSeconds <= 0) problems.Add($"{s}:Downloads:TicketLifetimeSeconds must be positive.");
         if (o.Export.MaxRows < 0) problems.Add($"{s}:Export:MaxRows must be 0 (unlimited) or positive.");
         return problems.Count > 0 ? ValidateOptionsResult.Fail(problems) : ValidateOptionsResult.Success;
     }

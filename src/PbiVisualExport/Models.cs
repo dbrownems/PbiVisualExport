@@ -86,7 +86,7 @@ public sealed class ExportSort
 }
 
 /// <summary>
-/// Payload POSTed by the browser client when the user exports a visual (contract version 1).
+/// Payload POSTed by the browser client when the user exports a visual (contract version 2).
 /// <see cref="WorkspaceId"/> and <see cref="ReportId"/> are required. Metadata (TOM via Fabric
 /// getDefinition) is addressed by ID, while the XMLA endpoint that streams the data only
 /// accepts names, so the server resolves the dataset and all names from the workspace

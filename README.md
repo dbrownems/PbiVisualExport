@@ -195,15 +195,25 @@ To build your own picker and button, use `listVisuals()` and `exportVisual(visua
 from a click handler. See the [client README](src/pbi-visual-export-js/README.md) for
 the full API, the transfer methods and the error codes.
 
+How the file reaches the user's disk depends on the browser:
+
+- **Desktop Chrome and Edge:** `exportVisual` opens a Save As dialog and streams the CSV
+  straight into the chosen file, at any size.
+- **Everywhere else** (Firefox, Safari, mobile browsers, a page inside a cross-origin
+  iframe), and from the visual menu command, it's a **browser download**. A click inside
+  the report can't open the dialog. The client collects the whole CSV, then saves it, so
+  the browser holds the entire file and nothing appears in its downloads until the
+  export completes. For large exports there, see
+  [5. Large exports without Save As](#5-large-exports-without-save-as).
+
 Embedding stays your app's job. The module only needs the workspace and report IDs,
 which the client reads from the embedded report.
 
 ### 4. Deploying
 
-- **Scale-out**: download tickets and their status live in memory. Behind a load
-  balancer with more than one instance, enable **session affinity** (for example ARR
-  affinity on App Service). Otherwise `GET download/{ticket}` can land on an instance
-  that never issued the ticket and returns 404.
+- **Scale-out**: the module keeps no state between requests, so instances behind a load
+  balancer need no session affinity. Concurrency limits and the metadata cache are per
+  instance.
 - **Proxy timeouts**: exports stream from the first row, and unsorted exports produce
   their first byte in 1–2 s. With `sort: true`, the capacity sorts the whole result
   before the first row: 2M rows took 42 s. A proxy with an idle timeout (App Service:
@@ -213,6 +223,39 @@ which the client reads from the embedded report.
   After you republish a model or report with changed fields, either delete the folder
   or rely on `RefreshOnMissSeconds`: an unknown field or filter column re-downloads
   definitions older than that.
+
+### 5. Large exports without Save As
+
+Where users don't get the Save As dialog (Firefox, Safari, mobile browsers, cross-origin
+iframes, the visual menu command), a browser download holds the whole CSV in the browser
+until the export completes, so a very large export can fail or slow the tab down. If
+those users export hundreds of MB, consider staging the export in **Azure Blob Storage**
+and handing the browser a short-lived **SAS URL**. The sample doesn't do this. A typical
+design:
+
+1. Your app starts a background job and returns a job ID. The job runs the export, for
+   example by calling the module's `POST csv` with the request the client built, and
+   streams the response into a blob as the rows arrive.
+2. The page polls the job. When the blob is written, your app returns a SAS URL for it.
+3. The page navigates to the URL (a link or a hidden iframe). The browser's download
+   manager streams the file from Storage, so it works in every browser and from the
+   visual menu, and an interrupted download can resume.
+
+The trade-offs:
+
+- **Slower start.** A blob can't be read until it's fully written, so the download
+  starts only when the export has finished (about 95 s for 2M rows), instead of after
+  1–2 s.
+- **A background job.** Don't hold the request open while the export runs: App Service
+  drops requests that send nothing for 230 s. Keep the job status where every instance
+  can read it, and retry jobs lost to a restart.
+- **Data at rest.** Exported rows, possibly personal data filtered by RLS, persist in
+  Storage. Delete them after the download or with a lifecycle management policy, and
+  choose the storage account's region, encryption and access controls accordingly.
+- **A bearer link.** A SAS works for anyone who has it until it expires. Use a user
+  delegation SAS (signed with Entra ID, so no account keys), read-only, scoped to one
+  blob, HTTPS only, with a short expiry, and set the file name with its `rscd`
+  (Content-Disposition) parameter.
 - **Linux**: the build and tests pass on Linux. XMLA streaming on Linux hasn't been
   verified against a live workspace yet.
 
@@ -223,7 +266,7 @@ privileged than the signed-in user. These layers decide what a caller can get:
 
 | Layer | Default | Purpose |
 |---|---|---|
-| Endpoint authorization | `RequireAuthorization()` | Requires a signed-in user. Chain a policy for more. The download and client-script endpoints are anonymous by design (see below). |
+| Endpoint authorization | `RequireAuthorization()` | Requires a signed-in user. Chain a policy for more. Only the client script (`client.js`, `client.mjs`) is anonymous. |
 | `AllowedWorkspaceIds` | empty | Rejects other workspaces (403) before any Power BI call. With the default authorizer, an empty list rejects everything; with your own authorizer, an empty list skips this check. |
 | `IVisualExportAuthorizer` | the allow-list only | Your per-user decision, given the resolved workspace, report, dataset, page and visual names and IDs. |
 | `Export:FieldValidation` | `Strict` | Only fields of the visual *as saved in the published report* can be exported, so a caller can't request other columns of the model (403). A visual bound to a field parameter can also export any field in the parameter. |
@@ -238,10 +281,6 @@ Details:
   The value is passed as a DAX literal, and by default it must be one of the bound
   column's values (`Export:ValidateParameterValues`). Power BI itself doesn't check
   this, so the M query must still treat parameter values as untrusted input.
-- **Download tickets** are unguessable, single-use, expire after 60 s, and are bound to
-  the user who called `prepare`. If the download request is authenticated, it must be
-  the same user. The download is anonymous so that a plain iframe navigation can save
-  the file without auth headers.
 - **CSRF**: JSON endpoints require `Content-Type: application/json` (otherwise 415).
   A cross-site form can't send that without a CORS preflight, so cookie auth is safe
   unless your CORS policy allows arbitrary origins with credentials.
@@ -283,13 +322,12 @@ Match what your embed token grants. If the embed token applies RLS and the expor
 doesn't, the export shows more rows than the user can see in the report.
 
 **Audit.** `IExportAuditSink.WriteAsync` receives a `VisualExportAuditRecord` for every
-export that reaches the data step: a `csv` request, or a `download` with a valid ticket,
-once it has a concurrency slot. That covers completed, failed and canceled exports,
-including a `csv` request that fails planning (e.g. field validation). The record has
-the user, the workspace, report, page and visual, the number of requested fields, the
-rows written, the effective user name, the outcome and the duration. There's no record
-for requests rejected before that (request checks, an invalid ticket, 429), for
-`prepare`, or for `bench`. Sink failures are logged and ignored.
+`csv` request that reaches the data step, once it has a concurrency slot. That covers
+completed, failed and canceled exports, including a request that fails planning (e.g.
+field validation). The record has the user, the workspace, report, page and visual, the
+number of requested fields, the rows written, the effective user name, the outcome and
+the duration. There's no record for requests rejected before that (request checks,
+429), for `prepare`, or for `bench`. Sink failures are logged and ignored.
 
 **Cross-origin API.** If the page and the API are on different origins, set `apiBase`
 to the absolute URL, and add a CORS policy to the group:
@@ -305,8 +343,7 @@ app.MapPbiVisualExport("/pbi-export").RequireCors("pbi-export");
 ```
 
 For cookie auth, add `.AllowCredentials()` and pass `credentials: "include"` to
-`createExporter`. The Save As path (`fetch` + `pipeTo`) and the status polling need
-CORS. The ticket download is a navigation, so it doesn't.
+`createExporter`. Both transfer methods use `fetch`, so both need the CORS policy.
 
 ## Configuration reference
 
@@ -330,8 +367,6 @@ Section `PbiVisualExport` (environment variables use `__`, for example
 | `Export:MaxConcurrentExportsPerUser` | `2` | Above this, requests get 429. 0 means unlimited. |
 | `Export:MaxConcurrentExports` | `0` | A process-wide limit (429 above it). 0 means unlimited. |
 | `Export:EnableBenchmark` | `false` | Enables `POST bench`. |
-| `Downloads:TicketLifetimeSeconds` | `60` | How long a ticket from `prepare` can be redeemed. |
-| `Downloads:StatusRetentionMinutes` | `15` | How long a ticket's progress and result stay queryable. |
 | `MetadataCache:Enabled` | `true` | |
 | `MetadataCache:TtlMinutes` | `60` | Freshness of cached definitions. ≤ 0 means they never expire on their own. |
 | `MetadataCache:PersistToDisk` | `true` | Keeps definitions across restarts. |
@@ -341,14 +376,12 @@ Section `PbiVisualExport` (environment variables use `__`, for example
 ## Endpoints and request contract
 
 All paths are relative to the prefix passed to `MapPbiVisualExport` (default
-`/pbi-export`). Responses carry `X-PbiVisualExport-Contract: 1`.
+`/pbi-export`). Responses carry `X-PbiVisualExport-Contract: 2`.
 
 | Endpoint | Auth | |
 |---|---|---|
-| `POST prepare` | group policy | Validates and plans the export, then returns `{ ticket, ticketExpiresInSeconds, fileName, columns, sort, parameters, warnings, … }`. |
-| `GET download/{ticket}` | anonymous (ticket) | Streams the CSV as an attachment. |
-| `GET download/{ticket}/status` | anonymous (ticket) | `{ state, rows, error, fileName }`. |
-| `POST csv` | group policy | Streams the CSV in the response (for `fetch` and programmatic callers). |
+| `POST csv` | group policy | Streams the CSV in the response, with `Content-Disposition: attachment`. |
+| `POST prepare` | group policy | Checks the export without running it (validation, plan, effective identity, XMLA credential) and returns `{ fileName, columns, sort, parameters, warnings, … }`. The client calls it before a browser download. |
 | `GET xmla-auth` | group policy | The device-code sign-in status. Returns 404 unless XMLA uses device code. |
 | `POST bench` | group policy | A read-only baseline: runs the query, reads every value, writes nothing. Returns 404 unless enabled. |
 | `GET client.js`, `client.mjs` | anonymous | The browser client. |
@@ -387,8 +420,7 @@ fields, an unknown report, or an ID or name that disagrees with the catalog) als
 | Status | Meaning |
 |---|---|
 | 400 | Request validation (above); a field or measure that's in neither the model nor the report's measures; report measures on a non-PBIR report; no `pageName`/`visualName` under `Strict`; a filter that can't be translated; an unknown aggregation; an invalid M parameter value or time zone. |
-| 403 | Workspace not allowed; authorizer denial; under `Strict`, a visual or field that isn't in the saved report, or a PBIR-Legacy report; a ticket issued to another user. |
-| 404 | Unknown, expired or already-used ticket. |
+| 403 | Workspace not allowed; authorizer denial; under `Strict`, a visual or field that isn't in the saved report, or a PBIR-Legacy report. |
 | 415 | Not `application/json`. |
 | 429 | Concurrency limit. |
 | 503 `signInRequired` | Dev XMLA device code. |
@@ -464,8 +496,8 @@ silently truncated file.
 | Ties in an explicit sort | Rows with equal sort keys can come out in a different order. Power BI breaks ties by the remaining group-by columns, ascending. |
 | Field-parameter visuals | Headers use the column name, not the parameter's label. |
 | PBIR-Legacy reports | Refused under `Strict`; report measures need PBIR. Use `PbirOnly`, or convert the report. |
-| Warnings from the Save As (`POST csv`) path | Not returned. The `prepare` (download) path returns them. |
-| Multiple instances | Tickets are in memory, so you need session affinity. |
+| Warnings from the Save As (`POST csv`) path | Not returned. The browser download path calls `prepare`, which returns them. |
+| Browser downloads (no Save As dialog) | The browser holds the whole CSV until the export completes, so very large exports can fail. See [5. Large exports without Save As](#5-large-exports-without-save-as). |
 | Not verified live | Service-principal and master-user modes, `EffectiveIdentity`, the net8.0 runtime, Linux, and the visual-menu click. Unit and endpoint tests cover them with mocks. |
 | Sensitivity labels | `getDefinition` is blocked for models with an encrypted label. |
 | Calculation groups, visual calculations, "show items with no data" | Untested. |

@@ -28,12 +28,13 @@ afterEach(() => {
     uninstallPicker();
     uninstallDocument();
     mock.timers.reset();
+    mock.restoreAll();
 });
 
 describe("exports", () => {
     test("version and contract", () => {
         assert.match(VERSION, /^\d+\.\d+\.\d+/);
-        assert.equal(CONTRACT_VERSION, "1");
+        assert.equal(CONTRACT_VERSION, "2");
     });
 });
 
@@ -523,7 +524,7 @@ describe("exportVisual to a file (Save As)", () => {
         assert.equal(phases.at(-1), "done");
         const call = fetch.calls[0];
         assert.equal(call.init.method, "POST");
-        assert.equal(call.init.headers.get("X-PbiVisualExport-Contract"), "1");
+        assert.equal(call.init.headers.get("X-PbiVisualExport-Contract"), "2");
         assert.equal(call.init.headers.get("Content-Type"), "application/json");
         assert.equal(call.body.visualName, "v1");
     });
@@ -619,78 +620,126 @@ describe("exportVisual to a file (Save As)", () => {
         installPicker();
         const warnings = [];
         const { exporter, visual } = setup({
-            routes: { "/pbi-export/csv": () => new Response(csv, { headers: { "X-PbiVisualExport-Contract": "2" } }) },
+            routes: { "/pbi-export/csv": () => new Response(csv, { headers: { "X-PbiVisualExport-Contract": "1" } }) },
             exporterOpts: { onWarning: m => warnings.push(m) },
         });
         await exporter.exportVisual(visual);
         await exporter.exportVisual(visual);
         assert.equal(warnings.length, 1);
-        assert.match(warnings[0], /contract 2/);
+        assert.match(warnings[0], /contract 1/);
     });
 });
 
-describe("exportVisual as a browser download (ticket)", () => {
-    const prepared = { ticket: "t/1", fileName: "Sales-20260101-000000.csv", ticketExpiresInSeconds: 60, columns: [] };
+describe("exportVisual as a browser download", () => {
+    const prepared = { fileName: "Sales-20260101-000000.csv", columns: 2, warnings: ["Sort on X ignored."] };
+    const csv = "A,M\r\n1,2\r\n";
 
-    function statusRoute(states) {
-        let i = 0;
-        return () => json(states[Math.min(i++, states.length - 1)]);
+    // The Blobs handed to <a download> links.
+    function captureBlobs() {
+        const blobs = [];
+        mock.method(URL, "createObjectURL", b => { blobs.push(b); return `blob:test/${blobs.length}`; });
+        mock.method(URL, "revokeObjectURL", () => { });
+        return blobs;
     }
 
-    test("prepares, starts the download in a hidden frame and follows its status", async () => {
-        mock.timers.enable({ apis: ["setTimeout"] }); // the frame's 60 s clean-up timer
-        const frames = installDocument();
+    test("checks with prepare, collects the CSV and saves it through a link", async () => {
+        mock.timers.enable({ apis: ["setTimeout"] }); // the object URL's clean-up timer
+        const links = installDocument();
+        const blobs = captureBlobs();
         const { exporter, visual, fetch } = setup({
-            exporterOpts: { pollIntervalMs: 5 },
             routes: {
                 "/pbi-export/prepare": () => json(prepared),
-                "/status": statusRoute([{ state: "Issued" }, { state: "Streaming", rows: 2 }, { state: "Completed", rows: 5 }]),
+                "/pbi-export/csv": () => new Response(csv, { headers: { "Content-Type": "text/csv" } }),
             },
         });
         const phases = [];
-        const result = await exporter.exportVisual(visual, { target: "download", onProgress: p => phases.push(p.phase) });
+        let seen;
+        const result = await exporter.exportVisual(visual, {
+            target: "download", onProgress: p => phases.push(p.phase), onRequest: (r, m) => { seen = m; },
+        });
         assert.equal(result.status, "completed");
         assert.equal(result.method, "download");
-        assert.equal(result.rows, 5);
-        assert.equal(result.fileName, prepared.fileName);
-        assert.equal(frames.length, 1);
-        assert.equal(frames[0].hidden, true);
-        assert.equal(frames[0].src, "/pbi-export/download/t%2F1");
-        assert.ok(fetch.calls.some(c => c.path === "/pbi-export/download/t%2F1/status"));
-        assert.deepEqual([...new Set(phases)], ["gathering", "checking", "waiting", "streaming", "done"]);
+        assert.equal(seen, "download");
+        assert.equal(result.bytes, Buffer.byteLength(csv));
+        assert.match(result.fileName, /^Sales-\d{8}-\d{6}\.csv$/);
+        assert.deepEqual(result.prepared.warnings, prepared.warnings);
+        assert.deepEqual(fetch.calls.map(c => c.path), ["/pbi-export/prepare", "/pbi-export/csv"]);
+        assert.equal(links.length, 1);
+        assert.equal(links[0].tag, "a");
+        assert.equal(links[0].download, result.fileName);
+        assert.equal(links[0].href, "blob:test/1");
+        assert.equal(links[0].clicked, true);
+        assert.equal(links[0].removed, true);
+        assert.equal(await blobs[0].text(), csv);
+        assert.match(blobs[0].type, /^text\/csv/);
+        assert.deepEqual(phases.slice(0, 3), ["gathering", "checking", "waiting"]);
+        assert.equal(phases.at(-1), "done");
+    });
+
+    test("uses the requested file name", async () => {
+        mock.timers.enable({ apis: ["setTimeout"] });
+        const links = installDocument();
+        captureBlobs();
+        const { exporter, visual } = setup({
+            routes: { "/pbi-export/prepare": () => json(prepared), "/pbi-export/csv": () => new Response(csv) },
+        });
+        const result = await exporter.exportVisual(visual, { target: "download", fileName: "mine.csv" });
+        assert.equal(result.fileName, "mine.csv");
+        assert.equal(links[0].download, "mine.csv");
     });
 
     test("auto falls back to a download without a picker", async () => {
         mock.timers.enable({ apis: ["setTimeout"] });
         installDocument();
+        captureBlobs();
         const { exporter, visual } = setup({
-            exporterOpts: { pollIntervalMs: 5 },
-            routes: { "/pbi-export/prepare": () => json(prepared), "/status": statusRoute([{ state: "Completed", rows: 1 }]) },
+            routes: { "/pbi-export/prepare": () => json(prepared), "/pbi-export/csv": () => new Response(csv) },
         });
         const result = await exporter.exportVisual(visual);
         assert.equal(result.method, "download");
     });
 
-    test("a failed download", async () => {
-        mock.timers.enable({ apis: ["setTimeout"] });
-        installDocument();
+    test("a failure part way saves nothing", async () => {
+        const links = installDocument();
+        captureBlobs();
+        const body = new ReadableStream({
+            start(c) { c.enqueue(new TextEncoder().encode("A,M\r\n")); },
+            pull(c) { c.error(new Error("connection reset")); },
+        });
         const { exporter, visual } = setup({
-            exporterOpts: { pollIntervalMs: 5 },
-            routes: { "/pbi-export/prepare": () => json(prepared), "/status": statusRoute([{ state: "Failed", error: "XMLA query failed" }]) },
+            routes: { "/pbi-export/prepare": () => json(prepared), "/pbi-export/csv": () => new Response(body) },
         });
         await assert.rejects(exporter.exportVisual(visual, { target: "download" }), e => {
             assert.equal(e.code, "downloadFailed");
-            assert.equal(e.message, "XMLA query failed");
+            assert.match(e.message, /connection reset/);
             return true;
         });
+        assert.equal(links.length, 0);
     });
 
-    test("too many exports", async () => {
+    test("a refused check doesn't run the export", async () => {
         installDocument();
-        const { exporter, visual } = setup({
+        const { exporter, visual, fetch } = setup({
             routes: { "/pbi-export/prepare": () => json({ error: "Too many exports in progress." }, 429) },
         });
         await assert.rejects(exporter.exportVisual(visual, { target: "download" }), e => e.code === "http" && e.status === 429);
+        assert.equal(fetch.calls.some(c => c.path === "/pbi-export/csv"), false);
+    });
+
+    test("an error from csv before the first row", async () => {
+        const links = installDocument();
+        const { exporter, visual } = setup({
+            routes: {
+                "/pbi-export/prepare": () => json(prepared),
+                "/pbi-export/csv": () => json({ error: "Sign in to XMLA", signInRequired: true, userCode: "ABC123" }, 503),
+            },
+        });
+        await assert.rejects(exporter.exportVisual(visual, { target: "download" }), e => {
+            assert.equal(e.code, "signInRequired");
+            assert.equal(e.signIn.userCode, "ABC123");
+            return true;
+        });
+        assert.equal(links.length, 0);
     });
 });
 
@@ -698,11 +747,12 @@ describe("visual menu command", () => {
     test("adds the command, exports on click and ignores other commands", async () => {
         mock.timers.enable({ apis: ["setTimeout"] });
         installDocument();
+        mock.method(URL, "createObjectURL", () => "blob:test");
+        mock.method(URL, "revokeObjectURL", () => { });
         const { exporter, report, visual } = setup({
-            exporterOpts: { pollIntervalMs: 5 },
             routes: {
-                "/pbi-export/prepare": () => json({ ticket: "k", fileName: "f.csv" }),
-                "/status": () => json({ state: "Completed", rows: 3 }),
+                "/pbi-export/prepare": () => json({ fileName: "f.csv" }),
+                "/pbi-export/csv": () => new Response("A\r\n1\r\n"),
             },
         });
         const results = [];
@@ -726,7 +776,7 @@ describe("visual menu command", () => {
         await done;
         assert.deepEqual(errors, []);
         assert.equal(results.length, 1);
-        assert.equal(results[0][0].rows, 3);
+        assert.equal(results[0][0].bytes, 6);
         assert.equal(results[0][0].method, "download");
         assert.equal(results[0][0].request.applyFormatStrings, false);
         assert.equal(results[0][1], visual);

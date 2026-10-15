@@ -1,11 +1,11 @@
-// The two ways an export reaches the user's disk. Neither holds the file in memory
-// (unlike fetch + blob):
-//  - file:     a Save As dialog (File System Access API, Chromium) and the body of
-//              POST {apiBase}/csv piped straight into the chosen file.
-//  - download: POST {apiBase}/prepare validates the export and returns a one-time ticket;
-//              a hidden iframe navigates to GET {apiBase}/download/{ticket}, so the
-//              browser's download manager applies Content-Disposition and streams to disk.
-//              Progress and errors come from GET {apiBase}/download/{ticket}/status.
+// The two ways an export reaches the user's disk:
+//  - file:     a Save As dialog (File System Access API, Chromium desktop) and the body of
+//              POST {apiBase}/csv piped straight into the chosen file. Nothing is held in
+//              memory.
+//  - download: POST {apiBase}/prepare checks the export, then the body of POST {apiBase}/csv
+//              is collected into a Blob and saved through an <a download> link. The browser
+//              holds the whole file until the export completes, which limits how large an
+//              export can be (see the README for staging large exports in Blob Storage).
 import { PbiExportError, aborted, errorFromText, errorText, isAbort, throwIfAborted } from "./errors";
 import { ApiClient, readJson } from "./http";
 import type { ExportProgress, PrepareResponse, VisualExportRequest } from "./types";
@@ -101,96 +101,63 @@ export async function saveToFile(api: ApiClient, request: VisualExportRequest, f
     return { bytes };
 }
 
-export async function downloadViaTicket(api: ApiClient, request: VisualExportRequest, report: Report,
-    pollIntervalMs: number, signal?: AbortSignal): Promise<{ rows: number; prepared: PrepareResponse }> {
+/**
+ * A browser download, for when there's no Save As dialog: checks the export with `prepare`,
+ * collects the CSV into a Blob and saves it through an `<a download>` link. The browser holds
+ * the whole file until the export completes; if the export fails part way, nothing is saved.
+ */
+export async function downloadBuffered(api: ApiClient, request: VisualExportRequest, fileName: string,
+    report: Report, signal?: AbortSignal): Promise<{ bytes: number; prepared: PrepareResponse }> {
     if (typeof document === "undefined")
         throw new PbiExportError("downloadFailed", "A browser download needs a document (use target \"file\" elsewhere).");
-    report({ phase: "checking", method: "download", message: "Checking the export\u2026" });
+    report({ phase: "checking", method: "download", fileName, message: "Checking the export\u2026" });
     const prepared = await readJson<PrepareResponse>(await api.postJson("prepare", request, signal));
     throwIfAborted(signal);
 
-    const ticketUrl = api.url(`download/${encodeURIComponent(prepared.ticket)}`);
-    const frame = document.createElement("iframe");
-    frame.hidden = true;
-    frame.setAttribute("aria-hidden", "true");
-    document.body.appendChild(frame);
     const started = performance.now();
-    const done = watchDownload(api, prepared, frame, started, report, pollIntervalMs, signal);
-    frame.src = ticketUrl;
+    report({ phase: "waiting", method: "download", fileName, message: "Exporting\u2026 waiting for the first rows" });
+    const resp = await api.postJson("csv", request, signal);
+    if (!resp.ok) throw errorFromText(await resp.text(), resp.status);
+    if (!resp.body) throw new PbiExportError("downloadFailed", "The response has no body.");
+
+    let bytes = 0;
+    const counter = new TransformStream<Uint8Array, Uint8Array>({
+        transform(chunk, controller) { bytes += chunk.byteLength; controller.enqueue(chunk); },
+    });
+    const tick = () => report({
+        phase: "streaming", method: "download", fileName, bytes,
+        message: `Exporting\u2026 ${formatSize(bytes)} received (${seconds(started)}); the file is saved when the export completes`,
+    });
+    const timer = setInterval(tick, 1000);
+    let blob: Blob;
     try {
-        return { rows: await done, prepared };
+        const body = resp.body.pipeThrough(counter, { signal });
+        blob = await new Response(body, { headers: { "Content-Type": "text/csv;charset=utf-8" } }).blob();
+    } catch (e) {
+        if (isAbort(e) || signal?.aborted) throw aborted(signal);
+        throw new PbiExportError("downloadFailed",
+            `The download stopped after ${formatSize(bytes)} (${errorText(e)}); nothing was saved.`, { cause: e });
     } finally {
-        // Removing the frame while the browser still writes could cancel the download.
-        if (signal?.aborted) frame.remove();
-        else setTimeout(() => frame.remove(), 60000);
+        clearInterval(timer);
     }
+    saveBlob(blob, fileName);
+    report({
+        phase: "done", method: "download", fileName, bytes,
+        message: `Done \u2013 ${fileName} (${formatSize(bytes)} in ${seconds(started)}) is in the browser's downloads.`,
+    });
+    return { bytes, prepared };
 }
 
-// Polls the ticket's status until the server has streamed the whole file (or failed).
-// The frame never loads for a download; if it does, the response was an error page.
-function watchDownload(api: ApiClient, prepared: PrepareResponse, frame: HTMLIFrameElement, started: number,
-    report: Report, pollIntervalMs: number, signal?: AbortSignal): Promise<number> {
-    const fileName = prepared.fileName;
-    const statusPath = `download/${encodeURIComponent(prepared.ticket)}/status`;
-    return new Promise<number>((resolve, reject) => {
-        let settled = false;
-        let failures = 0;
-        let polling = false;
-        const finish = (err: unknown, rows = 0) => {
-            if (settled) return;
-            settled = true;
-            clearInterval(timer);
-            frame.removeEventListener("load", onLoad);
-            signal?.removeEventListener("abort", onAbort);
-            if (err) reject(err); else resolve(rows);
-        };
-        const poll = async (): Promise<{ state?: string; rows?: number; error?: string | null } | null> => {
-            const resp = await api.get(statusPath, signal);
-            const text = await resp.text();
-            if (!resp.ok) throw errorFromText(text, resp.status);
-            return JSON.parse(text);
-        };
-        const timer = setInterval(async () => {
-            if (settled || polling) return;
-            polling = true;
-            try {
-                const s = await poll();
-                failures = 0;
-                const rows = Number(s?.rows || 0);
-                switch (s?.state) {
-                    case "Issued":
-                        report({ phase: "waiting", method: "download", fileName, message: `Exporting\u2026 waiting for the download to start (${seconds(started)})` });
-                        break;
-                    case "Streaming":
-                        report({ phase: "streaming", method: "download", fileName, rows, message: `Exporting\u2026 ${rows.toLocaleString()} rows sent to the browser as ${fileName} (${seconds(started)})` });
-                        break;
-                    case "Completed":
-                        report({ phase: "done", method: "download", fileName, rows, message: `Done \u2013 ${rows.toLocaleString()} rows downloaded as ${fileName} in ${seconds(started)} (see the browser's downloads).` });
-                        finish(null, rows);
-                        break;
-                    default:
-                        finish(new PbiExportError("downloadFailed", s?.error || `The download ${String(s?.state).toLowerCase()}.`));
-                }
-            } catch (e) {
-                if (e instanceof PbiExportError && (e.code === "http" || e.code === "aborted")) finish(e);
-                else if (++failures >= 30) finish(e);
-            } finally {
-                polling = false;
-            }
-        }, pollIntervalMs);
-        function onAbort() { finish(aborted(signal)); }
-        signal?.addEventListener("abort", onAbort);
-        async function onLoad() {
-            let text = "";
-            try {
-                if (frame.contentWindow?.location.href === "about:blank") return;
-                text = frame.contentDocument?.body?.innerText || "";
-            } catch { /* cross-origin error page: ask the status endpoint */ }
-            if (!text) {
-                try { text = (await poll())?.error || ""; } catch (e) { return finish(e); }
-            }
-            finish(text ? errorFromText(text, 0) : new PbiExportError("downloadFailed", "The download failed."));
-        }
-        frame.addEventListener("load", onLoad);
-    });
+// Hands a complete Blob to the browser's download manager.
+function saveBlob(blob: Blob, fileName: string): void {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = fileName;
+    a.hidden = true;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    // Some browsers read the Blob after click() returns: keep the URL alive for a while.
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
 }

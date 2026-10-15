@@ -108,7 +108,7 @@ Core providers are layered; **later wins**:
   full table in the README's *Configuration reference*). The host passes the
   section to `AddPbiVisualExport(section, configure?)`. Options are validated at
   startup (`PbiVisualExportOptionsValidator`, `ValidateOnStart`): the XMLA
-  endpoint, empty GUIDs in `AllowedWorkspaceIds`, non-positive ticket lifetime,
+  endpoint, empty GUIDs in `AllowedWorkspaceIds`,
   negative `MaxRows`, and the settings each credential mode needs (skipped when
   the host calls `UseCredential`).
 - **Sample settings** live under `PowerBI` (`PowerBIOptions.cs`): `WorkspaceId`
@@ -214,7 +214,7 @@ for exports that outlive one.
 
 ```mermaid
 flowchart LR
-    A["Host page + JS client<br/>listVisuals / exportVisual"] -->|"POST {prefix}/prepare → ticket<br/>GET {prefix}/download/{ticket} (iframe)<br/>or POST {prefix}/csv (Save As)"| B[ExportHandler]
+    A["Host page + JS client<br/>listVisuals / exportVisual"] -->|"POST {prefix}/csv (Save As, streamed)<br/>or POST {prefix}/prepare, then POST {prefix}/csv<br/>(browser download, collected in the page)"| B[ExportHandler]
     B -->|"IDs → names, allow-list,<br/>IVisualExportAuthorizer"| P[ExportRequestResolver + PowerBiCatalog]
     B --> C[CsvExportService]
     C -->|getDefinition TMSL → TOM, cached| D[SemanticModelMetadataService]
@@ -243,9 +243,9 @@ src/PbiVisualExport/                       the library (NuGet)
   Auth/PbiTokenProvider.cs                 credential factory + PBI/Fabric token minting
   Auth/XmlaTokenProvider.cs                XMLA credential (Shared, or non-blocking dev device-code sign-in)
   Services/
-    ExportHandler.cs                       endpoint logic: read/resolve, prepare, stream, tickets, status, errors, audit
+    ExportHandler.cs                       endpoint logic: read/resolve, prepare, stream, errors, audit
     ExportRequestResolver.cs               IDs → catalog names, ID/name agreement, allow-list, authorizer → VisualExportContext
-    DownloadTickets.cs                     DownloadTicketStore (one-time tickets, status) + ExportConcurrencyLimiter
+    ExportConcurrencyLimiter.cs            per-user and overall limits on running exports (429)
     PowerBiCatalog.cs                      cached workspace/report/dataset lookups (REST)
     CsvExportService.cs                    orchestrates: metadata → field validation → DAX → XMLA reader → CSV stream
     VisualFieldValidator.cs                FieldValidation: request fields ⊆ the visual's saved PBIR fields
@@ -265,7 +265,7 @@ src/PbiVisualExport/                       the library (NuGet)
 src/pbi-visual-export-js/                  the JS client (see its README)
   src/index.ts                             createExporter / Exporter (listVisuals, buildRequest, exportVisual, menu command, sign-in)
   src/gather.ts                            fields, filters (+ slicer/bookmark fallbacks), sort from the bookmark
-  src/transfer.ts                          Save As (File System Access) and ticket download (hidden iframe + status polling)
+  src/transfer.ts                          Save As (File System Access, streamed) and browser download (collected Blob + <a download>)
   src/http.ts, errors.ts, types.ts         fetch wrapper (contract header), PbiExportError codes, public types
   test/                                    node --test with a mocked powerbi-client
 samples/PbiVisualExport.SampleHost/        reference host (embedding is the host's job)
@@ -332,18 +332,25 @@ _sample/                                   upstream MS "Embed for your customers
       as `{ table, hierarchy, hierarchyLevel }`.
     - `formatted` (default true) → `applyFormatStrings`; `sort` (default **false**) →
       `applySort`.
-  - `exportVisual(visual, { target })` transfers the file without buffering it:
-    - `file` (`showSaveFilePicker`, Chromium): called *first*, while the click still
-      counts as a user gesture → real Save As dialog, then `fetch POST csv` and
-      `resp.body.pipeTo(writable)`. Dismissing the dialog resolves `{ status: "cancelled" }`; an `AbortSignal` rejects with code `aborted`. On failure
+  - `exportVisual(visual, { target })` transfers the file:
+    - `file` (`showSaveFilePicker`, Chromium desktop): called *first*, while the click
+      still counts as a user gesture → real Save As dialog, then `fetch POST csv` and
+      `resp.body.pipeTo(writable)`, so nothing is buffered. Dismissing the dialog resolves `{ status: "cancelled" }`; an `AbortSignal` rejects with code `aborted`. On failure
       the picked file is removed only if still empty (`discardFile`).
-    - `download`: `POST prepare` (validation, planning, XMLA token — errors and the
-      sign-in flow surface as JSON), then a hidden iframe navigates to
-      `download/{ticket}`; the browser's download manager applies
-      `Content-Disposition`. Progress/outcome come from polling
-      `download/{ticket}/status`. The frame is kept (removing it can cancel the
-      download).
+    - `download` (`downloadBuffered`): `POST prepare` (validation, planning, identity,
+      XMLA token — errors, warnings and the sign-in flow surface as JSON before the
+      query runs), then `fetch POST csv`, counted through a `TransformStream` for
+      progress and collected with `Response.blob()`, then saved through an
+      `<a download>` link (object URL revoked after 60 s). The browser holds the
+      **whole file** until the export completes, and a failure part way saves nothing.
+      For large exports in browsers without Save As, the README's *5. Large exports
+      without Save As* suggests staging in Blob Storage + a SAS URL (guidance only;
+      not implemented).
     - `auto` (default): `file` where available, else `download`.
+    - (Until contract 2, `download` used a one-time ticket: `prepare` issued it and a
+      hidden iframe streamed `GET download/{ticket}` into the browser's download
+      manager. It was removed to keep the server stateless, so no session affinity is
+      needed.)
   - `addVisualMenuCommand()` adds "Export all data (CSV)" to visual context menus
     (replaces `settings.extensions`); menu clicks have no user gesture, so they always
     use `download`.
@@ -352,19 +359,14 @@ _sample/                                   upstream MS "Embed for your customers
 - **`ExportHandler`** (behind `MapPbiVisualExport`):
   - `csv` and `prepare` read the JSON body (415 unless `application/json` — the
     CSRF guard), then `ExportRequestResolver.ResolveAsync` (below).
-  - `prepare` also runs `CsvExportService.PlanAsync` (cached metadata, field
-    validation, DAX build) and the XMLA token check, checks the per-user concurrency
-    limit, and issues a ticket: `{ fileName, columns, sort, reportMeasures,
-    measureFilters, parameters, warnings, ticket, ticketExpiresInSeconds, workspaceName,
-    datasetId, datasetName, reportName }`. (`parameters` are the dynamic M parameter
-    values it sets, e.g. `RegionParam = "West"`; their values are validated when the
-    query runs, so a bad value fails the download, reported through its status.)
-  - `download/{ticket}` is anonymous (a navigation can't send auth headers); the
-    ticket is single-use, expires after `Downloads:TicketLifetimeSeconds`, and is
-    bound to the user key of `prepare` — an authenticated download by someone else
-    is 403. Status is kept for `StatusRetentionMinutes`. Tickets are **in memory**
-    (multiple instances need session affinity).
-  - `StreamAsync` (shared by `csv` and `download`): concurrency lease (429), then
+  - `prepare` checks an export without running it: it checks the per-user concurrency
+    limit, resolves the effective identity, runs `CsvExportService.PlanAsync` (cached
+    metadata, field validation, DAX build) and the XMLA token check, and returns
+    `{ fileName, columns, sort, reportMeasures, measureFilters, parameters, warnings,
+    workspaceName, datasetId, datasetName, reportName }`. (`parameters` are the dynamic
+    M parameter values it sets, e.g. `RegionParam = "West"`; their values are validated
+    when the query runs, so a bad value fails the `csv` request.)
+  - `StreamAsync` (`csv`): concurrency lease (429), then
     `Content-Disposition` via `ContentDispositionHeaderValue.SetHttpFileName` (ASCII
     `filename=` + UTF-8 `filename*`; Kestrel rejects raw non-ASCII header values),
     `Cache-Control: no-store`, `nosniff`, and `CsvExportService.ExportAsync` straight
@@ -372,10 +374,12 @@ _sample/                                   upstream MS "Embed for your customers
     (`Response.Clear()`), including failures in the resolver and the
     `IEffectiveIdentityProvider` (`prepare` and `bench` also turn unexpected errors
     into a JSON 500); errors mid-stream rethrow and **abort the connection**
-    (never a silently truncated file); cancellation is never translated. Once the lease is acquired, every stream
-    (`csv`, or `download` with a valid ticket) ends with one audit record —
+    (never a silently truncated file); cancellation is never translated. Once the lease is acquired, every
+    `csv` request ends with one audit record (channel `csv`) —
     completed, failed or canceled — to all `IExportAuditSink`s (sink failures are
-    logged and ignored). A 429, an invalid ticket and `prepare` aren't audited.
+    logged and ignored). A 429 and `prepare` aren't audited.
+  - The module keeps no state between requests (metadata cache and concurrency
+    limits are per instance), so instances need no session affinity.
   - User key: `user:{oid | objectidentifier | nameidentifier | sub | name}` claim,
     else `anon:{remote IP}`.
   - An `ExportRequestException` from planning (a field that's in neither the model
@@ -637,7 +641,7 @@ _sample/                                   upstream MS "Embed for your customers
 ## Front-end → back-end contract
 
 `POST {prefix}/csv` and `POST {prefix}/prepare` body = `VisualExportRequest`
-(`Models.cs`, contract version `ExportHandler.ContractVersion` = `1`, sent as the
+(`Models.cs`, contract version `ExportHandler.ContractVersion` = `2`, sent as the
 `X-PbiVisualExport-Contract` response header; the JS client has the same constant
 in `http.ts`). The TS mirror is `src/pbi-visual-export-js/src/types.ts` — change
 both together, and bump the version on a breaking wire change.
@@ -801,10 +805,10 @@ both together, and bump the version on a breaking wire change.
 | I want to change… | Start in |
 |---|---|
 | How fields/filters/sort are gathered in the browser | `src/pbi-visual-export-js/src/gather.ts` (then `npm run build`, commit the bundles) |
-| Browser transfer (Save As / ticket download), client API | `src/pbi-visual-export-js/src/transfer.ts`, `index.ts`, `types.ts` |
+| Browser transfer (Save As / browser download), client API | `src/pbi-visual-export-js/src/transfer.ts`, `index.ts`, `types.ts` |
 | The generated DAX (grouping, format strings, filters) | `Services/DaxQueryBuilder.cs`, `.Filters.cs`, `.Literals.cs`, `DaxPlan.cs` (+ `Golden/*.dax`, `UPDATE_GOLDEN=1`) |
 | CSV shape / streaming / row caps / raw value text | `Services/CsvExportService.cs` (+ `PbiVisualExportOptions.cs` `Export`) |
-| Endpoints, status codes, tickets, audit | `ExportEndpoints.cs`, `Services/ExportHandler.cs`, `Services/DownloadTickets.cs` |
+| Endpoints, status codes, concurrency, audit | `ExportEndpoints.cs`, `Services/ExportHandler.cs`, `Services/ExportConcurrencyLimiter.cs` |
 | Request validation (IDs ↔ names, allow-list, authorizer) | `Services/ExportRequestResolver.cs`, `Services/PowerBiCatalog.cs` |
 | Which fields a caller may export | `Services/VisualFieldValidator.cs` (`Export:FieldValidation`), `Services/FieldParameters.cs` |
 | Host extensibility (authorizer, RLS identity, audit) | `Extensibility.cs`, `PbiVisualExportServiceCollectionExtensions.cs` |
@@ -828,7 +832,7 @@ both together, and bump the version on a breaking wire change.
   and the `Extensibility.cs` seams. Adding public API = README + package README.
 - **DI**: library services are registered in `AddPbiVisualExport` with `TryAdd*`
   (so a host or test can replace them): tokens, `XmlaConnectionFactory`, catalog,
-  metadata/cache, DAX builder, tickets and limiter are singletons; the resolver,
+  metadata/cache, DAX builder and limiter are singletons; the resolver,
   `CsvExportService` and `ExportHandler` are scoped. Follow that split. Never
   register library services in the sample.
 - Nullable + implicit usings are **on**; warnings should stay at zero. Prefer
@@ -842,9 +846,9 @@ both together, and bump the version on a breaking wire change.
 
 ## Known limitations / good first issues
 
-Integration-level gaps (in-memory tickets, paths not yet verified live, sensitivity
-labels) are tracked in the README's *Known gaps* table; the DAX/filter gaps are
-detailed here.
+Integration-level gaps (browser downloads held in full without Save As, paths not yet
+verified live, sensitivity labels) are tracked in the README's *Known gaps* table; the
+DAX/filter gaps are detailed here.
 
 - **Report-level measures** are supported for **PBIR (enhanced format)** reports
   only; a visual using a measure the model lacks, on a PBIR-Legacy report, fails
@@ -936,10 +940,11 @@ process during the run.
   (identical in read-only mode) plus ~0.4 KB/row (formatted) / ~1 KB/row (raw
   `ToString`) for CSV text. Overlapping read and write, or span formatting, would
   only lower CPU, not wall time.
-- **Browser side**: no buffering either. The Save As path pipes `resp.body`
-  straight into the file. The fallback hands the response to the browser's
-  download manager. Measured in the canvas (mock file handle, 2M rows / 625 MB
-  formatted): the JS heap stayed ≤ 10 MB, at the same throughput as curl.
+- **Browser side**: the Save As path doesn't buffer: it pipes `resp.body` straight
+  into the file. Measured in the canvas (mock file handle, 2M rows / 625 MB
+  formatted): the JS heap stayed ≤ 10 MB, at the same throughput as curl. The
+  browser-download fallback (no Save As) collects the whole CSV in a Blob before
+  saving it, so its memory grows with the file.
 
 ## Source control
 

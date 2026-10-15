@@ -2,7 +2,7 @@ import { PbiExportError, aborted, errorFromText, isAbort } from "./errors";
 import type { HeadersSource } from "./types";
 
 /** Version of the endpoint contract this client speaks (server header `X-PbiVisualExport-Contract`). */
-export const CONTRACT_VERSION = "1";
+export const CONTRACT_VERSION = "2";
 const CONTRACT_HEADER = "X-PbiVisualExport-Contract";
 
 /** Calls the module's endpoints under `apiBase`. */

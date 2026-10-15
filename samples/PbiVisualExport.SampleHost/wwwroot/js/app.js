@@ -208,7 +208,7 @@
     }
 
     // "Export all data (CSV)" in each visual's "More options" menu. The click happens inside
-    // the report's iframe, so it downloads through the browser rather than a Save As dialog.
+    // the report's iframe, so it can't open a Save As dialog: it's a browser download.
     async function addMenuCommand() {
         await exporter.addVisualMenuCommand({
             export: () => ({
@@ -271,9 +271,10 @@
         }
     }
 
-    // The client streams the CSV to disk without holding it in memory: into a Save As file
-    // (Chromium's File System Access API) or, elsewhere, as a browser download
-    // (POST {API}/prepare issues a one-time ticket; GET {API}/download/{ticket} streams it).
+    // Where Chromium's File System Access API is available, the client streams the CSV into a
+    // Save As file without holding it in memory. Elsewhere, and from the visual menu, it's a
+    // browser download: POST {API}/prepare checks the export, then POST {API}/csv is collected
+    // in the page and saved when complete.
     async function doExport() {
         const entry = visualsByKey[selectEl.value];
         if (!entry) return;
@@ -284,7 +285,7 @@
                 ...exportOptions(entry),
                 onRequest: (request, method) => renderDebug(request, method === "file"
                     ? `sent to POST ${API}/csv \u2192 Save As`
-                    : `sent to POST ${API}/prepare, then GET ${API}/download/{ticket} (browser download)`)
+                    : `sent to POST ${API}/prepare, then POST ${API}/csv (browser download)`)
             });
             if (result.status === "cancelled") setStatus("Export cancelled.");
             else showWarnings(result);

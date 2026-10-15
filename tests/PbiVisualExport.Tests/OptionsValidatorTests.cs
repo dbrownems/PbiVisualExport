@@ -71,14 +71,12 @@ public class OptionsValidatorTests
     {
         var o = new PbiVisualExportOptions { XmlaEndpoint = " " };
         o.AllowedWorkspaceIds.Add(Guid.Empty);
-        o.Downloads.TicketLifetimeSeconds = 0;
         o.Export.MaxRows = -1;
         var result = Validate(o, hostCredential: true);
         Assert.Equal(new[]
         {
             "PbiVisualExport:XmlaEndpoint is required.",
             "PbiVisualExport:AllowedWorkspaceIds contains an empty GUID.",
-            "PbiVisualExport:Downloads:TicketLifetimeSeconds must be positive.",
             "PbiVisualExport:Export:MaxRows must be 0 (unlimited) or positive."
         }, result.Failures);
     }

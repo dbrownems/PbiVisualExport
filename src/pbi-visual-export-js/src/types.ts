@@ -47,7 +47,7 @@ export interface PbiReport {
     off(eventName: string, handler?: (event: any) => unknown): void;
 }
 
-// ---- Wire contract (version 1) ----
+// ---- Wire contract (version 2) ----
 
 /** A column, hierarchy level or measure placed in the visual. */
 export interface ExportField {
@@ -105,7 +105,7 @@ export interface VisualExportRequest {
     sortSource: string;
 }
 
-/** Response of `POST {apiBase}/prepare`. */
+/** Response of `POST {apiBase}/prepare`: checks an export without running it. */
 export interface PrepareResponse {
     fileName: string;
     columns: number;
@@ -115,8 +115,6 @@ export interface PrepareResponse {
     /** Dynamic M query parameters set from filters on their bound columns, e.g. `RegionParam = "West"`. */
     parameters?: string[];
     warnings?: string[];
-    ticket: string;
-    ticketExpiresInSeconds: number;
     workspaceName: string;
     datasetId: string;
     datasetName: string;
@@ -160,8 +158,6 @@ export interface ExporterOptions {
     credentials?: RequestCredentials;
     /** Replacement `fetch` (tests, instrumentation). */
     fetch?: typeof fetch;
-    /** Download status poll interval. Default 1000 ms. */
-    pollIntervalMs?: number;
     /** Non-fatal problems (e.g. a client/server contract mismatch). Default `console.warn`. */
     onWarning?: (message: string) => void;
 }
@@ -175,9 +171,7 @@ export interface ExportProgress {
     message: string;
     method?: ExportMethod;
     fileName?: string;
-    /** Rows streamed so far (`download` method). */
-    rows?: number;
-    /** Bytes saved so far (`file` method). */
+    /** Bytes saved (`file` method) or received (`download` method) so far. */
     bytes?: number;
     elapsedMs: number;
 }
@@ -199,12 +193,13 @@ export interface BuildRequestOptions {
 export interface ExportOptions extends BuildRequestOptions {
     /**
      * `auto` (default): a Save As dialog streaming into the chosen file where the File
-     * System Access API is available, else a browser download. `file`: the dialog only
-     * (fails where unavailable). `download`: a browser download (Content-Disposition).
-     * The dialog needs a user gesture: call `exportVisual` directly from a click handler.
+     * System Access API is available (Chromium desktop), else a browser download. `file`:
+     * the dialog only (fails where unavailable). `download`: a browser download, which the
+     * browser holds in full until the export completes, so very large exports can run out of
+     * memory. The dialog needs a user gesture: call `exportVisual` directly from a click handler.
      */
     target?: "auto" | "file" | "download";
-    /** Suggested name for the Save As dialog. Default `{visual title}-{timestamp}.csv`. */
+    /** File name: suggested in the Save As dialog, or the browser download's. Default `{visual title}-{timestamp}.csv`. */
     fileName?: string;
     /** Called with the request just before it is sent (e.g. to log or display it). */
     onRequest?: (request: VisualExportRequest, method: ExportMethod) => void;
@@ -215,11 +210,10 @@ export interface ExportResult {
     status: "completed" | "cancelled";
     method?: ExportMethod;
     fileName?: string;
-    rows?: number;
     bytes?: number;
     elapsedMs: number;
     request?: VisualExportRequest;
-    /** The pre-flight result (`download` method). */
+    /** The `prepare` check's result (`download` method): warnings, parameters, plan summary. */
     prepared?: PrepareResponse;
 }
 
