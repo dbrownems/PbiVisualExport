@@ -19,7 +19,7 @@ export type PbiExportErrorCode =
     | "http"
     /** The server couldn't be reached. */
     | "network"
-    /** The transfer failed or stopped part way. A partial file may remain (a Save As file is removed only if still empty). */
+    /** The transfer failed or stopped part way. A Save As file may keep partial content (it's removed only if still empty); a browser download saves nothing. */
     | "downloadFailed"
     /** Cancelled through the `signal`. */
     | "aborted";

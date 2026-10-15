@@ -111,13 +111,6 @@ public sealed class EndpointTests : IAsyncLifetime
             Assert.Fail($"{(int)response.StatusCode}: {await response.Content.ReadAsStringAsync()}");
     }
 
-    private async Task<string> PrepareTicket(string user = "u1")
-    {
-        var response = await _client.SendAsync(Post("/pbi-export/prepare", Summary1(), user));
-        await AssertOk(response);
-        return (await Json(response)).GetProperty("ticket").GetString()!;
-    }
-
     [Theory]
     [InlineData("client.js")]
     [InlineData("client.mjs")]
@@ -127,7 +120,7 @@ public sealed class EndpointTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal("text/javascript", response.Content.Headers.ContentType!.MediaType);
         Assert.Equal("no-cache", response.Headers.CacheControl!.ToString());
-        Assert.Equal("1", response.Headers.GetValues(ExportHandler.ContractHeader).Single());
+        Assert.Equal("2", response.Headers.GetValues(ExportHandler.ContractHeader).Single());
         var etag = response.Headers.ETag!;
         Assert.NotEmpty(await response.Content.ReadAsStringAsync());
 
@@ -165,7 +158,7 @@ public sealed class EndpointTests : IAsyncLifetime
     {
         var response = await _client.SendAsync(Post("/pbi-export/prepare", "{}", contentType: "text/plain"));
         Assert.Equal(HttpStatusCode.UnsupportedMediaType, response.StatusCode);
-        Assert.Equal("1", response.Headers.GetValues(ExportHandler.ContractHeader).Single());
+        Assert.Equal("2", response.Headers.GetValues(ExportHandler.ContractHeader).Single());
     }
 
     [Fact]
@@ -198,17 +191,16 @@ public sealed class EndpointTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Prepare_PlansTheVisualAndIssuesATicket()
+    public async Task Prepare_ChecksAndPlansTheVisual()
     {
         var response = await _client.SendAsync(Post("/pbi-export/prepare", Summary1()));
         await AssertOk(response);
         var body = await Json(response);
         Assert.Equal(7, body.GetProperty("columns").GetInt32());
-        Assert.Equal(43, body.GetProperty("ticket").GetString()!.Length);
-        Assert.Equal(60, body.GetProperty("ticketExpiresInSeconds").GetInt32());
         Assert.Matches(@"^summary1-\d{8}-\d{6}\.csv$", body.GetProperty("fileName").GetString());
         Assert.Equal("Dataset", body.GetProperty("datasetName").GetString());
         Assert.Equal(0, body.GetProperty("warnings").GetArrayLength());
+        Assert.False(body.TryGetProperty("ticket", out _));
     }
 
     [Fact]
@@ -257,36 +249,6 @@ public sealed class EndpointTests : IAsyncLifetime
         r.Fields.Add(Samples.Column("Orders", "Customer Name"));
         var response = await _client.SendAsync(Post("/pbi-export/csv", r));
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
-    }
-
-    [Fact]
-    public async Task Status_ReportsAnIssuedTicket()
-    {
-        var ticket = await PrepareTicket();
-        var response = await _client.SendAsync(Get($"/pbi-export/download/{ticket}/status"));
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        var body = await Json(response);
-        Assert.Equal("Issued", body.GetProperty("state").GetString());
-        Assert.Equal(0, body.GetProperty("rows").GetInt64());
-        Assert.Equal("no-store", response.Headers.CacheControl!.ToString());
-    }
-
-    [Fact]
-    public async Task Download_ByAnotherUser_IsForbidden_AndDoesNotUseTheTicket()
-    {
-        var ticket = await PrepareTicket("u1");
-        var response = await _client.SendAsync(Get($"/pbi-export/download/{ticket}", user: "u2"));
-        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
-
-        var status = await Json(await _client.SendAsync(Get($"/pbi-export/download/{ticket}/status")));
-        Assert.Equal("Issued", status.GetProperty("state").GetString());
-    }
-
-    [Fact]
-    public async Task UnknownTickets_AreNotFound()
-    {
-        Assert.Equal(HttpStatusCode.NotFound, (await _client.SendAsync(Get("/pbi-export/download/nope"))).StatusCode);
-        Assert.Equal(HttpStatusCode.NotFound, (await _client.SendAsync(Get("/pbi-export/download/nope/status"))).StatusCode);
     }
 
     [Fact]

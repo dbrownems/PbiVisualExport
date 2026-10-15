@@ -7,7 +7,7 @@
 import { PbiExportError, errorText, isAbort, throwIfAborted } from "./errors";
 import { SKIP_VISUAL_TYPES, browserTimeZone, createBookmarkSnapshot, gatherFields, gatherFilters, gatherSort, suggestedFileName, visualTitle } from "./gather";
 import { ApiClient, readJson } from "./http";
-import { canPickFile, discardFile, downloadViaTicket, pickSaveFile, saveToFile } from "./transfer";
+import { canPickFile, discardFile, downloadBuffered, pickSaveFile, saveToFile } from "./transfer";
 import type {
     AddVisualMenuCommandOptions, BuildRequestOptions, ExportMethod, ExportOptions, ExportProgress, ExportResult,
     ExportableVisual, ExporterOptions, PbiPage, PbiReport, PbiVisual, VisualExportRequest, VisualMenuCommandOptions,
@@ -32,7 +32,6 @@ export function createExporter(options: ExporterOptions): Exporter {
 export class Exporter {
     readonly report: PbiReport;
     private readonly api: ApiClient;
-    private readonly pollIntervalMs: number;
     private readonly ids: { workspaceId?: string; reportId?: string; datasetId?: string };
     private readonly disposers: (() => void)[] = [];
 
@@ -46,7 +45,6 @@ export class Exporter {
             fetch: fetchImpl,
             onWarning: options.onWarning ?? (m => console.warn(m)),
         });
-        this.pollIntervalMs = options.pollIntervalMs ?? 1000;
         this.ids = { workspaceId: options.workspaceId, reportId: options.reportId, datasetId: options.datasetId };
     }
 
@@ -124,17 +122,19 @@ export class Exporter {
      * Exports a visual to CSV. Resolves when the file is complete, with `status: "cancelled"`
      * if the user dismissed the Save As dialog; rejects with a {@link PbiExportError}.
      * Call it directly from a click handler: the Save As dialog needs the user gesture.
+     * Without the dialog (`download`), the browser holds the whole CSV until the export completes.
      */
     async exportVisual(visual: PbiVisual, options: ExportOptions = {}): Promise<ExportResult> {
         const started = performance.now();
         const elapsedMs = () => performance.now() - started;
         const page = this.pageOf(visual, options.page);
         const target = options.target ?? "auto";
+        const fileName = options.fileName || suggestedFileName(visualTitle(visual, page));
 
         // First, while the click still counts as a user gesture.
         let file = null;
         if (target !== "download") {
-            const pick = await pickSaveFile(options.fileName || suggestedFileName(visualTitle(visual, page)));
+            const pick = await pickSaveFile(fileName);
             if ("cancelled" in pick) return { status: "cancelled", elapsedMs: elapsedMs() };
             if ("handle" in pick) file = pick.handle;
             else if (target === "file")
@@ -160,8 +160,8 @@ export class Exporter {
             const { bytes } = await saveToFile(this.api, request, file, report, options.signal);
             return { status: "completed", method, fileName: file.name, bytes, elapsedMs: elapsedMs(), request };
         }
-        const { rows, prepared } = await downloadViaTicket(this.api, request, report, this.pollIntervalMs, options.signal);
-        return { status: "completed", method, fileName: prepared.fileName, rows, elapsedMs: elapsedMs(), request, prepared };
+        const { bytes, prepared } = await downloadBuffered(this.api, request, fileName, report, options.signal);
+        return { status: "completed", method, fileName, bytes, elapsedMs: elapsedMs(), request, prepared };
     }
 
     /** Dev XMLA device-code sign-in status, or null if the server doesn't use device code. */

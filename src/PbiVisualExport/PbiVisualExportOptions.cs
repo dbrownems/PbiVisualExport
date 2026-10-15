@@ -30,8 +30,6 @@ public sealed class PbiVisualExportOptions
 
     public ExportOptions Export { get; set; } = new();
 
-    public DownloadOptions Downloads { get; set; } = new();
-
     public MetadataCacheOptions MetadataCache { get; set; } = new();
 }
 
@@ -124,20 +122,6 @@ public enum FieldValidationMode
     Strict,
     PbirOnly,
     Off
-}
-
-/// <summary>
-/// Browser downloads: <c>POST {prefix}/prepare</c> validates a request and returns a one-time
-/// ticket; <c>GET {prefix}/download/{ticket}</c> streams the file with Content-Disposition, so
-/// the browser saves it without holding it in memory (and without auth headers or cookies).
-/// </summary>
-public sealed class DownloadOptions
-{
-    /// <summary>How long a ticket can be redeemed after <c>prepare</c> issues it.</summary>
-    public int TicketLifetimeSeconds { get; set; } = 60;
-
-    /// <summary>How long a redeemed ticket's status (progress, result, error) stays queryable.</summary>
-    public int StatusRetentionMinutes { get; set; } = 15;
 }
 
 /// <summary>

@@ -13,10 +13,9 @@ namespace PbiVisualExport.Services;
 /// Implements the endpoints mapped by <see cref="PbiVisualExportEndpointRouteBuilderExtensions.MapPbiVisualExport"/>.
 /// Error responses are JSON <c>{ error }</c>, plus <c>problems</c> (a list) on request-validation
 /// 400s from <see cref="ExportRequestResolver"/>: 400 invalid or unexportable request, 403 not
-/// allowed (allow-list, authorizer, field validation, another user's ticket), 404 unknown,
-/// expired or used ticket, 415 not JSON, 429 too many concurrent exports, 503
-/// <c>{ signInRequired, verificationUri, userCode }</c> when the XMLA device-code sign-in
-/// (development) is pending, 500 otherwise.
+/// allowed (allow-list, authorizer, field validation), 415 not JSON, 429 too many concurrent
+/// exports, 503 <c>{ signInRequired, verificationUri, userCode }</c> when the XMLA device-code
+/// sign-in (development) is pending, 500 otherwise.
 /// Every failure before the first CSV byte (including the request resolver and the
 /// <see cref="IEffectiveIdentityProvider"/>) becomes one of those JSON responses, on every
 /// endpoint. A failure after the CSV has started streaming aborts the connection, so the
@@ -26,14 +25,13 @@ namespace PbiVisualExport.Services;
 internal sealed class ExportHandler
 {
     public const string ContractHeader = "X-PbiVisualExport-Contract";
-    public const string ContractVersion = "1";
+    public const string ContractVersion = "2";
 
     internal static readonly JsonSerializerOptions Json = CreateJsonOptions();
 
     private readonly ExportRequestResolver _resolver;
     private readonly CsvExportService _csv;
     private readonly XmlaTokenProvider _xmlaTokens;
-    private readonly DownloadTicketStore _tickets;
     private readonly ExportConcurrencyLimiter _limiter;
     private readonly IEffectiveIdentityProvider? _identities;
     private readonly IEnumerable<IExportAuditSink> _audit;
@@ -44,7 +42,6 @@ internal sealed class ExportHandler
         ExportRequestResolver resolver,
         CsvExportService csv,
         XmlaTokenProvider xmlaTokens,
-        DownloadTicketStore tickets,
         ExportConcurrencyLimiter limiter,
         IEnumerable<IExportAuditSink> audit,
         IOptions<PbiVisualExportOptions> options,
@@ -54,7 +51,6 @@ internal sealed class ExportHandler
         _resolver = resolver;
         _csv = csv;
         _xmlaTokens = xmlaTokens;
-        _tickets = tickets;
         _limiter = limiter;
         _identities = identities;
         _audit = audit;
@@ -80,40 +76,37 @@ internal sealed class ExportHandler
             return;
         }
         var (userKey, userName) = UserOf(http);
-        await StreamAsync(http, ExportTarget.From(context), ct => GetIdentityAsync(context, ct), userKey, userName, "csv",
-            BuildFileName(context.Request.VisualTitle), ticket: null);
+        await StreamAsync(http, context, userKey, userName, BuildFileName(context.Request.VisualTitle));
     }
 
     /// <summary>
-    /// <c>POST prepare</c>: validates the request, builds the DAX plan and checks the XMLA
-    /// credential, then issues a one-time download ticket for <c>GET download/{ticket}</c>.
+    /// <c>POST prepare</c>: checks an export without running it. Validates the request, builds
+    /// the DAX plan, and checks the effective identity and the XMLA credential, so problems
+    /// (and the dev sign-in prompt) surface before <c>csv</c> runs the query. The JS client
+    /// calls it before a browser download, which is collected in the page.
     /// </summary>
     public async Task<IResult> PrepareAsync(HttpContext http)
     {
         Stamp(http);
         var (context, error) = await ReadAndResolveAsync(http);
         if (context is null) return error!;
-        var (userKey, userName) = UserOf(http);
+        var (userKey, _) = UserOf(http);
         if (!_limiter.WouldAllow(userKey)) return TooManyExports();
 
         try
         {
-            var identity = await GetIdentityAsync(context, http.RequestAborted);
+            await GetIdentityAsync(context, http.RequestAborted);
             var plan = await _csv.PlanAsync(context.Request, http.RequestAborted);
             await _xmlaTokens.GetTokenAsync(http.RequestAborted);
-            var fileName = BuildFileName(context.Request.VisualTitle);
-            var ticket = _tickets.Issue(ExportTarget.From(context), identity, userKey, userName, fileName);
             return Results.Json(new
             {
-                fileName,
+                fileName = BuildFileName(context.Request.VisualTitle),
                 columns = plan.Columns.Count,
                 sort = plan.SortDescription,
                 reportMeasures = plan.ReportMeasures,
                 measureFilters = plan.MeasureFilters,
                 parameters = plan.Parameters.Select(p => p.ToString()),
                 warnings = plan.Warnings,
-                ticket = ticket.Id,
-                ticketExpiresInSeconds = (int)_tickets.Lifetime.TotalSeconds,
                 workspaceName = context.WorkspaceName,
                 datasetId = context.DatasetId,
                 datasetName = context.DatasetName,
@@ -133,48 +126,6 @@ internal sealed class ExportHandler
             _log.LogError(ex, "Export pre-flight failed");
             return Error(StatusCodes.Status500InternalServerError, "Export failed: " + ex.Message);
         }
-    }
-
-    /// <summary>
-    /// <c>GET download/{ticket}</c>: streams a prepared export with Content-Disposition, so a
-    /// plain navigation (e.g. a hidden iframe) saves it without buffering it in the page.
-    /// Anonymous: the ticket is an unguessable one-time capability. If the caller is signed
-    /// in, it must be the user the ticket was issued to.
-    /// </summary>
-    public async Task DownloadAsync(HttpContext http, string id)
-    {
-        Stamp(http);
-        http.Response.Headers.CacheControl = "no-store";
-        var ticket = _tickets.Find(id);
-        if (ticket is null || ticket.State == DownloadState.Expired)
-        {
-            await Error(StatusCodes.Status404NotFound, "This download link is unknown or has expired. Export the visual again.").ExecuteAsync(http);
-            return;
-        }
-        var (callerKey, _) = UserOf(http);
-        if (ticket.UserKey is { } owner && owner.StartsWith("user:", StringComparison.Ordinal)
-            && callerKey.StartsWith("user:", StringComparison.Ordinal) && callerKey != owner)
-        {
-            await Error(StatusCodes.Status403Forbidden, "This download link was issued to a different user.").ExecuteAsync(http);
-            return;
-        }
-        if (!ticket.TryRedeem())
-        {
-            await Error(StatusCodes.Status404NotFound, "This download link has already been used. Export the visual again.").ExecuteAsync(http);
-            return;
-        }
-        await StreamAsync(http, ticket.Target, _ => Task.FromResult(ticket.Identity), ticket.UserKey ?? callerKey, ticket.UserName,
-            "download", ticket.FileName, ticket);
-    }
-
-    /// <summary><c>GET download/{ticket}/status</c>: <c>{ state, rows, error, fileName }</c>.</summary>
-    public IResult Status(HttpContext http, string id)
-    {
-        Stamp(http);
-        http.Response.Headers.CacheControl = "no-store";
-        var t = _tickets.Find(id);
-        if (t is null) return Error(StatusCodes.Status404NotFound, "Unknown download ticket.");
-        return Results.Json(new { state = t.State, rows = Interlocked.Read(ref t.Rows), error = t.Error, fileName = t.FileName }, Json);
     }
 
     /// <summary><c>GET xmla-auth</c>: XMLA device-code sign-in status, polled by the client after a sign-in-required error.</summary>
@@ -227,18 +178,16 @@ internal sealed class ExportHandler
     }
 
     /// <summary>
-    /// Streams the CSV. <paramref name="resolveIdentity"/> runs inside the error boundary, so an
+    /// Streams the CSV. The effective identity is resolved inside the error boundary, so an
     /// identity-provider failure is reported (and audited) like any other pre-stream failure.
     /// </summary>
-    private async Task StreamAsync(HttpContext http, ExportTarget target, Func<CancellationToken, Task<EffectiveIdentity?>> resolveIdentity,
-        string userKey, string? userName, string channel, string fileName, DownloadTicket? ticket)
+    private async Task StreamAsync(HttpContext http, VisualExportContext context, string userKey, string? userName, string fileName)
     {
         var response = http.Response;
         var ct = http.RequestAborted;
         using var lease = _limiter.TryAcquire(userKey);
         if (lease is null)
         {
-            ticket?.Finish(DownloadState.Failed, TooManyExportsMessage);
             await TooManyExports().ExecuteAsync(http);
             return;
         }
@@ -251,7 +200,7 @@ internal sealed class ExportHandler
         EffectiveIdentity? identity = null;
         try
         {
-            identity = await resolveIdentity(ct);
+            identity = await GetIdentityAsync(context, ct);
             response.ContentType = "text/csv; charset=utf-8";
             var disposition = new ContentDispositionHeaderValue("attachment");
             disposition.SetHttpFileName(fileName); // ASCII filename= plus UTF-8 filename*=
@@ -259,31 +208,23 @@ internal sealed class ExportHandler
             response.Headers.CacheControl = "no-store";
             response.Headers.XContentTypeOptions = "nosniff";
 
-            await _csv.ExportAsync(target.Request, response.Body, identity, n =>
-            {
-                Interlocked.Exchange(ref streamed, n);
-                if (ticket is not null) Interlocked.Exchange(ref ticket.Rows, n);
-            }, ct);
+            await _csv.ExportAsync(context.Request, response.Body, identity, n => Interlocked.Exchange(ref streamed, n), ct);
             outcome = VisualExportOutcome.Completed;
-            ticket?.Finish(DownloadState.Completed);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             outcome = VisualExportOutcome.Canceled;
             failure = "The download was canceled.";
-            ticket?.Finish(DownloadState.Failed, failure);
         }
         catch (ExportRequestException ex) when (!response.HasStarted)
         {
             failure = ex.Message;
-            ticket?.Finish(DownloadState.Failed, failure);
             response.Clear();
             await Rejected(ex).ExecuteAsync(http);
         }
         catch (XmlaSignInRequiredException ex) when (!response.HasStarted)
         {
             failure = ex.Message;
-            ticket?.Finish(DownloadState.Failed, failure);
             response.Clear();
             await SignInRequired(ex).ExecuteAsync(http);
         }
@@ -291,7 +232,6 @@ internal sealed class ExportHandler
         {
             _log.LogError(ex, "Export failed before streaming started");
             failure = "Export failed: " + ex.Message;
-            ticket?.Finish(DownloadState.Failed, failure);
             response.Clear();
             await Error(StatusCodes.Status500InternalServerError, failure).ExecuteAsync(http);
         }
@@ -301,16 +241,15 @@ internal sealed class ExportHandler
             // download rather than a silently truncated CSV.
             _log.LogError(ex, "Export failed mid-stream");
             failure = "Export failed mid-stream: " + ex.Message;
-            ticket?.Finish(DownloadState.Failed, failure);
             throw;
         }
         finally
         {
             await AuditAsync(new VisualExportAuditRecord(
-                started, sw.Elapsed, userName, channel,
-                target.WorkspaceId, target.WorkspaceName, target.DatasetId, target.DatasetName, target.ReportId, target.ReportName,
-                target.Request.PageName, target.Request.VisualName, target.Request.VisualTitle,
-                target.Request.Fields.Count, Interlocked.Read(ref streamed),
+                started, sw.Elapsed, userName, "csv",
+                context.WorkspaceId, context.WorkspaceName, context.DatasetId, context.DatasetName, context.ReportId, context.ReportName,
+                context.Request.PageName, context.Request.VisualName, context.Request.VisualTitle,
+                context.Request.Fields.Count, Interlocked.Read(ref streamed),
                 identity?.UserName, outcome, failure));
         }
     }
@@ -368,7 +307,7 @@ internal sealed class ExportHandler
         }
     }
 
-    /// <summary>A stable key for the calling user (concurrency limits, ticket ownership) and a display name.</summary>
+    /// <summary>A stable key for the calling user (concurrency limits) and a display name.</summary>
     internal static (string Key, string? Name) UserOf(HttpContext http)
     {
         var u = http.User;
@@ -385,9 +324,8 @@ internal sealed class ExportHandler
         return ("anon:" + http.Connection.RemoteIpAddress, null);
     }
 
-    private const string TooManyExportsMessage = "Too many exports are running; wait for one to finish and try again.";
-
-    private static IResult TooManyExports() => Error(StatusCodes.Status429TooManyRequests, TooManyExportsMessage);
+    private static IResult TooManyExports() =>
+        Error(StatusCodes.Status429TooManyRequests, "Too many exports are running; wait for one to finish and try again.");
 
     private static IResult SignInRequired(XmlaSignInRequiredException ex) =>
         Results.Json(new { error = ex.Message, signInRequired = true, verificationUri = ex.VerificationUri, userCode = ex.UserCode },

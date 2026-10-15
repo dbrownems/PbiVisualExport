@@ -2,9 +2,9 @@
 
 The browser half of [PbiVisualExport](../../README.md). It reads an embedded Power BI
 visual's fields, filters, slicer selections and sort through powerbi-client, sends them
-to the PbiVisualExport ASP.NET Core module, and streams the CSV to disk without holding
-it in memory. It has no runtime dependencies, and works with the `Report` your page
-already embeds.
+to the PbiVisualExport ASP.NET Core module, and saves the CSV. Where a Save As dialog is
+available, it streams the CSV to disk without holding it in memory. It has no runtime
+dependencies, and works with the `Report` your page already embeds.
 
 ## Loading it
 
@@ -71,13 +71,20 @@ exportButton.onclick = async () => {
 | `target` | Behavior |
 |---|---|
 | `auto` (default) | `file` where the File System Access API is available, else `download`. |
-| `file` | A Save As dialog, then `POST {prefix}/csv` piped into the chosen file. Chromium only; needs a user gesture. |
-| `download` | `POST {prefix}/prepare` returns a one-time ticket. A hidden iframe navigates to `GET {prefix}/download/{ticket}` (Content-Disposition), and the client polls `…/status` for progress. |
+| `file` | A Save As dialog, then `POST {prefix}/csv` piped into the chosen file, so nothing is held in memory. Desktop Chrome and Edge only; needs a user gesture. |
+| `download` | `POST {prefix}/prepare` checks the export, then `POST {prefix}/csv` is collected into a Blob and saved through an `<a download>` link. Works everywhere, but the browser holds the whole CSV until the export completes, and the file appears in the browser's downloads only then. |
 
 The Save As dialog needs the click's user gesture, so call `exportVisual` directly from
 the click handler. Don't `await` other work first. A visual-menu click happens inside
 the report's iframe, which gives the page no gesture, so menu commands always use
 `download`.
+
+Because `download` holds the whole file, very large exports can fail in browsers without
+the Save As dialog (Firefox, Safari, mobile, cross-origin iframes) and from the visual
+menu. If your users export hundreds of MB there, consider staging exports in Azure Blob
+Storage and handing the browser a short-lived SAS URL. The
+[module README](../../README.md#5-large-exports-without-save-as) describes the design
+and its trade-offs.
 
 ## API
 
@@ -92,7 +99,6 @@ the report's iframe, which gives the page no gesture, so menu commands always us
 | `datasetId` | `report.config.datasetId` | Optional: the server resolves it from the report. |
 | `headers` | none | Extra headers, or a (possibly async) function that returns them. |
 | `credentials` | `same-origin` | `fetch` credentials; use `include` for a cross-origin API that uses cookies. |
-| `pollIntervalMs` | 1000 | Download status polling interval. |
 | `onWarning` | `console.warn` | Non-fatal problems, such as a client/server contract mismatch. |
 
 `Exporter` methods:
@@ -116,10 +122,10 @@ the report's iframe, which gives the page no gesture, so menu commands always us
 | `formatted` | Default true. |
 | `sort` | Default false. |
 | `page` | The visual's page. Default: `visual.page`. |
-| `onProgress` | Called with `{ phase, message, rows?, bytes?, elapsedMs }`. |
+| `onProgress` | Called with `{ phase, message, bytes?, elapsedMs }`. |
 | `signal` | An `AbortSignal` that cancels the export. |
 | `target` | See the table above. |
-| `fileName` | The name suggested in the Save As dialog. |
+| `fileName` | The file name: suggested in the Save As dialog, or the browser download's. |
 | `onRequest` | Called with the request just before it's sent. |
 
 The `ExportResult` fields depend on how the file was transferred:
@@ -127,8 +133,8 @@ The `ExportResult` fields depend on how the file was transferred:
 | `status` / `method` | Fields |
 |---|---|
 | `cancelled` (Save As dismissed) | `status`, `elapsedMs` |
-| `completed` / `file` | `status`, `method`, `fileName`, `bytes`, `elapsedMs`, `request` (no `rows`) |
-| `completed` / `download` | `status`, `method`, `fileName`, `rows`, `elapsedMs`, `request`, `prepared` (no `bytes`). `completed` means the server finished streaming; the browser's download manager writes the file. |
+| `completed` / `file` | `status`, `method`, `fileName`, `bytes`, `elapsedMs`, `request` |
+| `completed` / `download` | `status`, `method`, `fileName`, `bytes`, `elapsedMs`, `request`, `prepared` (the `prepare` result, with any `warnings`). The file has been handed to the browser's downloads. |
 
 ### Errors
 
@@ -137,7 +143,7 @@ Failures reject with a `PbiExportError`, which has a `code`:
 | `code` | Meaning |
 |---|---|
 | `http` | The server refused. See `status` (400 bad request, 403 not allowed, 429 too many exports). `problems` lists the details, only for request-validation 400s. |
-| `downloadFailed` | The transfer failed or stopped part way. A partial file may remain: a Save As file is removed only if it's still empty. |
+| `downloadFailed` | The transfer failed or stopped part way. A Save As file may keep partial content (it's removed only if still empty); a browser download saves nothing. |
 | `signInRequired` | Dev only: the server needs an XMLA device-code sign-in. Show `signIn.verificationUri` and `signIn.userCode`, `await exporter.waitForSignIn()`, then retry. |
 | `slicerUnreadable` | A slicer's selection (or the page's list of visuals, needed to find its slicers) couldn't be read. The client stops rather than export too many rows. |
 | `filtersUnreadable` | The report, page or visual filters couldn't be read, from the SDK or from the bookmark. The client stops rather than export too many rows. |

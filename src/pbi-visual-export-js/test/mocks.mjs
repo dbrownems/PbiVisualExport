@@ -97,22 +97,20 @@ export function uninstallPicker() {
     delete globalThis.showSaveFilePicker;
 }
 
-/** Just enough DOM for the ticket download: an iframe that never loads. */
+/** Just enough DOM for a browser download: records the `<a download>` links clicked. */
 export function installDocument() {
-    const frames = [];
+    const links = [];
     globalThis.document = {
-        createElement: () => {
-            const f = { hidden: false, src: "", attrs: {}, listeners: {}, removed: false,
-                setAttribute(k, v) { this.attrs[k] = v; },
-                addEventListener(e, h) { this.listeners[e] = h; },
-                removeEventListener(e) { delete this.listeners[e]; },
+        createElement: tag => {
+            const a = { tag, href: "", download: "", hidden: false, clicked: false, removed: false,
+                click() { this.clicked = true; },
                 remove() { this.removed = true; } };
-            frames.push(f);
-            return f;
+            links.push(a);
+            return a;
         },
         body: { appendChild: () => { } },
     };
-    return frames;
+    return links;
 }
 
 export function uninstallDocument() {
