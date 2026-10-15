@@ -30,14 +30,20 @@ public sealed class EndpointTests : IAsyncLifetime
     public async Task InitializeAsync()
     {
         Directory.CreateDirectory(_cacheDirectory);
-        var database = Fixtures.Database("LargeExportTest").Clone();
-        database.Name = database.ID = "LargeExportTest"; // TMDL folders leave it empty; model.bim always has one
-        File.WriteAllText(Path.Combine(_cacheDirectory, $"{Fixtures.DatasetId:N}.tmsl.json"), TOM.JsonSerializer.SerializeDatabase(database));
-        File.WriteAllText(Path.Combine(_cacheDirectory, $"{Fixtures.ReportId:N}.report.json"),
-            Fixtures.Snapshot(Fixtures.ReportParts(Report)));
+        SeedCache(_cacheDirectory, "LargeExportTest", Report);
 
         _app = await StartHostAsync();
         _client = _app.GetTestClient();
+    }
+
+    /// <summary>Pre-seeds a metadata cache with a model and a report from the fixtures, under the stub catalog's IDs.</summary>
+    private static void SeedCache(string directory, string model, string report)
+    {
+        var database = Fixtures.Database(model).Clone();
+        database.Name = database.ID = model; // TMDL folders leave it empty; model.bim always has one
+        File.WriteAllText(Path.Combine(directory, $"{Fixtures.DatasetId:N}.tmsl.json"), TOM.JsonSerializer.SerializeDatabase(database));
+        File.WriteAllText(Path.Combine(directory, $"{Fixtures.ReportId:N}.report.json"),
+            Fixtures.Snapshot(Fixtures.ReportParts(report)));
     }
 
     private async Task<WebApplication> StartHostAsync(
@@ -213,6 +219,35 @@ public sealed class EndpointTests : IAsyncLifetime
         var response = await _client.SendAsync(Post("/pbi-export/prepare", r));
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
         Assert.Contains("'Orders'[Customer Name]", (await Json(response)).GetProperty("error").GetString());
+    }
+
+    [Fact]
+    public async Task Prepare_AllowsAnyFieldOfTheVisualsFieldParameter()
+    {
+        // FieldParamReport fpTable was saved with Category selected in the Fields slicer; the model lists Segment too.
+        var cache = Path.Combine(Path.GetTempPath(), "pve-tests-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(cache);
+        try
+        {
+            SeedCache(cache, "FieldParamTest", "FieldParamReport");
+            await using var app = await StartHostAsync(o => o.MetadataCache.DiskCacheDirectory = cache);
+            using var client = app.GetTestClient();
+            var r = Fixtures.RequestFromVisual("FieldParamReport", "Page1", "fpTable");
+            r.ReportName = null; // the stub catalog's report has another name
+            r.Fields[r.Fields.FindIndex(f => f.Column == "Category")] = Samples.Column("Product", "Segment");
+
+            var response = await client.SendAsync(Post("/pbi-export/prepare", r));
+            await AssertOk(response);
+            Assert.Equal(3, (await Json(response)).GetProperty("columns").GetInt32());
+
+            r.Fields.Add(Samples.Column("Product", "ProductKey"));
+            response = await client.SendAsync(Post("/pbi-export/prepare", r));
+            Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        }
+        finally
+        {
+            try { Directory.Delete(cache, recursive: true); } catch (IOException) { }
+        }
     }
 
     [Fact]

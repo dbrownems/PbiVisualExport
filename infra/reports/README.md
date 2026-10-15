@@ -71,7 +71,9 @@ parameter (Category / Segment / Product Name → `Product[Category|Segment|Produ
   targets the hidden `Fields[Fields Fields]` column (values like `'Product'[Segment]`).
 - **`fpTable`** — "Sales by selected field(s)": a tableEx whose `Values` role has a
   `fieldParameters` entry, so its columns **swap** with the slicer selection
-  (`getDataFields` returns the real `Product` columns + the two measures).
+  (`getDataFields` returns the real `Product` columns + the two measures). The saved
+  definition only lists `Product[Category]` (the field selected when it was saved), so
+  field validation reads the parameter's other fields from the model.
 - **`table1`** — the parameter column itself plus measures (one row per label,
   identical totals). Exporting it requires grouping on the `relatedColumnDetails`
   key column, which `DaxQueryBuilder` adds implicitly.
