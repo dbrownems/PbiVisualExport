@@ -249,6 +249,7 @@ src/PbiVisualExport/                       the library (NuGet)
     PowerBiCatalog.cs                      cached workspace/report/dataset lookups (REST)
     CsvExportService.cs                    orchestrates: metadata → field validation → DAX → XMLA reader → CSV stream
     VisualFieldValidator.cs                FieldValidation: request fields ⊆ the visual's saved PBIR fields
+    FieldParameters.cs                     the fields a field parameter offers (NAMEOF refs in its calc table)
     DaxQueryBuilder.cs                     VisualExportRequest + TOM (+ report measures) → single DAX query: Build, fields, sort
     DaxQueryBuilder.Filters.cs             filter translation (column, Top N, value, multi-column, relative date, M parameters)
     DaxQueryBuilder.Literals.cs            DAX literals, identifier quoting, model lookups
@@ -393,9 +394,15 @@ _sample/                                   upstream MS "Embed for your customers
   (cached) report definition and requires the request's page + visual to exist in
   the **saved PBIR** definition, and every output field to be one of that visual's
   fields (same column, measure, or aggregation of a column, in any role, including
-  `fieldParameters`). Otherwise 403 — so a caller can't use the module's identity to
+  `fieldParameters`). A visual bound to a field parameter saves only the fields selected
+  when the report was saved, so it may also export any field the parameter offers:
+  `FieldParameters` reads them from the (cached) model, as the `NAMEOF` references in the
+  parameter table's calculated partition (string literals and comments skipped; columns
+  and measures only, since field parameters have no implicit aggregations).
+  Otherwise 403 — so a caller can't use the module's identity to
   read arbitrary columns. Sort keys outside the visual (and its saved sort) are
-  dropped with a warning. A miss triggers one refresh-on-miss. `PbirOnly` exports
+  dropped with a warning. A miss triggers one refresh-on-miss (of the model too, for a
+  field-parameter visual). `PbirOnly` exports
   PBIR-Legacy reports unchecked; `Off` trusts the request. Filters are never
   restricted (they only narrow rows), but a filter on a column bound to a dynamic M
   parameter also picks the data the source query reads: see **Dynamic M query
@@ -799,7 +806,7 @@ both together, and bump the version on a breaking wire change.
 | CSV shape / streaming / row caps / raw value text | `Services/CsvExportService.cs` (+ `PbiVisualExportOptions.cs` `Export`) |
 | Endpoints, status codes, tickets, audit | `ExportEndpoints.cs`, `Services/ExportHandler.cs`, `Services/DownloadTickets.cs` |
 | Request validation (IDs ↔ names, allow-list, authorizer) | `Services/ExportRequestResolver.cs`, `Services/PowerBiCatalog.cs` |
-| Which fields a caller may export | `Services/VisualFieldValidator.cs` (`Export:FieldValidation`) |
+| Which fields a caller may export | `Services/VisualFieldValidator.cs` (`Export:FieldValidation`), `Services/FieldParameters.cs` |
 | Host extensibility (authorizer, RLS identity, audit) | `Extensibility.cs`, `PbiVisualExportServiceCollectionExtensions.cs` |
 | Options / validation | `PbiVisualExportOptions.cs`, `PbiVisualExportOptionsValidator` (+ sample `appsettings.json`, README table) |
 | XMLA connection / addressing / effective identity | `Services/XmlaConnectionFactory.cs` (+ `XmlaEndpoint`) |

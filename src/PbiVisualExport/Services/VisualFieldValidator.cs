@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
+using TOM = Microsoft.AnalysisServices.Tabular;
 
 namespace PbiVisualExport.Services;
 
@@ -21,13 +22,15 @@ internal sealed class VisualDefinition
     // semanticQuery QueryAggregateFunction, by code.
     private static readonly string[] AggregateFunctions = ImplicitAggregations.ByCode;
 
-    private VisualDefinition(string pageName, string name, string? visualType, List<VisualFieldRef> fields, List<VisualFieldRef> sortFields)
+    private VisualDefinition(string pageName, string name, string? visualType, List<VisualFieldRef> fields, List<VisualFieldRef> sortFields,
+        List<VisualFieldRef> fieldParameterColumns)
     {
         PageName = pageName;
         Name = name;
         VisualType = visualType;
         Fields = fields;
         SortFields = sortFields;
+        FieldParameterColumns = fieldParameterColumns;
     }
 
     public string PageName { get; }
@@ -40,6 +43,12 @@ internal sealed class VisualDefinition
     /// <summary>Fields in the visual's saved sort.</summary>
     public IReadOnlyList<VisualFieldRef> SortFields { get; }
 
+    /// <summary>
+    /// The columns of the field parameters bound to the visual's roles (also in <see cref="Fields"/>).
+    /// The fields a parameter can show are in the model: see <see cref="FieldParameters"/>.
+    /// </summary>
+    public IReadOnlyList<VisualFieldRef> FieldParameterColumns { get; }
+
     /// <summary>Parses a <c>visual.json</c>; null for a container without a visual (a visual group).</summary>
     public static VisualDefinition? Parse(string pageName, string folderName, string json)
     {
@@ -49,6 +58,7 @@ internal sealed class VisualDefinition
 
         var fields = new List<VisualFieldRef>();
         var sort = new List<VisualFieldRef>();
+        var fieldParameters = new List<VisualFieldRef>();
         if (TryObject(visual, "query", out var query))
         {
             if (TryObject(query, "queryState", out var state))
@@ -57,13 +67,20 @@ internal sealed class VisualDefinition
                     if (role.Value.ValueKind != JsonValueKind.Object) continue;
                     AddFields(role.Value, "projections", "field", fields);
                     // A field parameter bound to the role: the parameter column itself.
-                    AddFields(role.Value, "fieldParameters", "parameterExpr", fields);
+                    var roleParameters = new List<VisualFieldRef>();
+                    AddFields(role.Value, "fieldParameters", "parameterExpr", roleParameters);
+                    fields.AddRange(roleParameters);
+                    fieldParameters.AddRange(roleParameters);
                 }
             if (TryObject(query, "sortDefinition", out var sortDefinition))
                 AddFields(sortDefinition, "sort", "field", sort);
         }
-        return new VisualDefinition(pageName, Str(root, "name") ?? folderName, Str(visual, "visualType"), fields, sort);
+        return new VisualDefinition(pageName, Str(root, "name") ?? folderName, Str(visual, "visualType"), fields, sort, fieldParameters);
     }
+
+    /// <summary>This visual with more fields it can show (e.g. the fields of its field parameters).</summary>
+    public VisualDefinition WithFields(IEnumerable<VisualFieldRef> more) =>
+        new(PageName, Name, VisualType, Fields.Concat(more).ToList(), SortFields.ToList(), FieldParameterColumns.ToList());
 
     /// <summary>Whether the visual shows <paramref name="field"/> (same kind: a column, a hierarchy level, a measure, or the same aggregation of a column).</summary>
     public bool Shows(ExportField field) => Matches(Fields, field.Table, Target(field.Column, field.Hierarchy, field.HierarchyLevel),
@@ -188,13 +205,16 @@ internal sealed record FieldValidationResult(
 /// Checks an export request against the visual's saved definition
 /// (<see cref="ExportOptions.FieldValidation"/>), so a caller can only export what the
 /// visual shows: every output field must be one of the visual's fields (same column,
-/// measure, or aggregation of a column). Sort keys outside the visual are dropped with a
-/// warning. Filters aren't restricted: the embedding API can apply any filter to the live
-/// visual, and filters only narrow the rows.
+/// measure, or aggregation of a column) or, for a visual bound to a field parameter, one of
+/// the parameter's fields (read from the model, see <see cref="FieldParameters"/>). Sort
+/// keys outside the visual are dropped with a warning. Filters aren't restricted: the
+/// embedding API can apply any filter to the live visual, and filters only narrow the rows.
 /// </summary>
 internal static class VisualFieldValidator
 {
-    public static FieldValidationResult Validate(VisualExportRequest request, ReportDefinition report, FieldValidationMode mode)
+    /// <param name="model">The semantic model, for the fields of the visual's field parameters (null = the saved fields only).</param>
+    public static FieldValidationResult Validate(VisualExportRequest request, ReportDefinition report, FieldValidationMode mode,
+        TOM.Model? model = null)
     {
         var none = Array.Empty<string>();
         if (mode == FieldValidationMode.Off) return new(request, none, null, StatusCodes.Status200OK, false, Checked: false);
@@ -221,6 +241,10 @@ internal static class VisualFieldValidator
                 $"'{request.ReportName}'. Only saved visuals can be exported: save and republish the report (unsaved or " +
                 "personalized visuals aren't supported).",
                 StatusCodes.Status403Forbidden, stale: true);
+
+        // A field parameter can swap in any of its fields; only the model lists them.
+        if (model is not null && visual.FieldParameterColumns.Count > 0)
+            visual = visual.WithFields(visual.FieldParameterColumns.SelectMany(p => FieldParameters.Fields(model, p.Entity)));
 
         // The fields the query would use (see DaxQueryBuilder.Build): a table plus a measure, column or hierarchy level.
         var notShown = request.Fields

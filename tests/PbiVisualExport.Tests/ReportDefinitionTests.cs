@@ -117,6 +117,7 @@ public class ReportDefinitionTests
             new VisualFieldRef(VisualFieldKind.Column, "Fields", "Fields")
         }, v.Fields);
         Assert.Equal(new[] { new VisualFieldRef(VisualFieldKind.Measure, "Sales", "Count") }, v.SortFields);
+        Assert.Equal(new[] { new VisualFieldRef(VisualFieldKind.Column, "Fields", "Fields") }, v.FieldParameterColumns);
         Assert.True(v.CanSortBy(new ExportSort { Table = "Sales", Measure = "count" }));
         Assert.False(v.Shows(new ExportField { Table = "Sales", Measure = "Count" }));
     }

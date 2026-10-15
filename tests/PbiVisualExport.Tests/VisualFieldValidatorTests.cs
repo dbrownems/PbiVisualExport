@@ -181,6 +181,58 @@ public class VisualFieldValidatorTests
         Assert.Null(Validate(r).Error);
     }
 
+    // FieldParamReport fpTable: its Values role is bound to the Fields parameter, and the report was saved with Category selected.
+    private static VisualExportRequest FpTable(params string[] productColumns)
+    {
+        var r = Fixtures.RequestFromVisual("FieldParamReport", "Page1", "fpTable");
+        r.Fields.RemoveAll(f => f.Table == "Product");
+        r.Fields.InsertRange(0, productColumns.Select(c => Samples.Column("Product", c)));
+        return r;
+    }
+
+    private static FieldValidationResult ValidateFpTable(VisualExportRequest r, bool withModel = true) =>
+        VisualFieldValidator.Validate(r, Fixtures.Report("FieldParamReport"), FieldValidationMode.Strict,
+            withModel ? Fixtures.Model("FieldParamTest") : null);
+
+    [Fact]
+    public void FieldParameterVisual_AllowsEveryFieldOfTheParameter()
+    {
+        Assert.Null(ValidateFpTable(FpTable("Category")).Error);
+        Assert.Null(ValidateFpTable(FpTable("Segment")).Error);
+        Assert.Null(ValidateFpTable(FpTable("Product", "Segment")).Error); // several selected in the slicer
+    }
+
+    [Fact]
+    public void FieldParameterVisual_WithoutTheModel_AllowsOnlyTheSavedFields()
+    {
+        Assert.Null(ValidateFpTable(FpTable("Category"), withModel: false).Error);
+        var refused = ValidateFpTable(FpTable("Segment"), withModel: false);
+        Assert.Equal(StatusCodes.Status403Forbidden, refused.StatusCode);
+        Assert.Contains("'Product'[Segment]", refused.Error);
+    }
+
+    [Fact]
+    public void FieldParameterVisual_RefusesFieldsOutsideTheParameter()
+    {
+        var r = FpTable("Segment");
+        r.Fields.Add(Samples.Column("Product", "ProductKey"));
+        r.Fields.Add(Samples.Agg("Product", "Segment", "Count")); // field parameters have no implicit aggregations
+        var result = ValidateFpTable(r);
+        Assert.Equal(StatusCodes.Status403Forbidden, result.StatusCode);
+        Assert.Contains("'Product'[ProductKey], Count('Product'[Segment])", result.Error);
+    }
+
+    [Fact]
+    public void FieldParameterVisual_CanBeSortedByTheParametersFields()
+    {
+        var r = FpTable("Segment");
+        r.Sort.Add(new ExportSort { Table = "Product", Column = "Segment", Direction = "Descending" });
+        var result = ValidateFpTable(r);
+        Assert.Null(result.Error);
+        Assert.Empty(result.Warnings);
+        Assert.Single(result.Request.Sort);
+    }
+
     private static string LevelExpr(string entity, string hierarchy, string level) =>
         $$$"""{"HierarchyLevel":{"Expression":{"Hierarchy":{"Expression":{"SourceRef":{"Entity":"{{{entity}}}"}},"Hierarchy":"{{{hierarchy}}}"}},"Level":"{{{level}}}"}}""";
 

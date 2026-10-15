@@ -226,7 +226,7 @@ privileged than the signed-in user. These layers decide what a caller can get:
 | Endpoint authorization | `RequireAuthorization()` | Requires a signed-in user. Chain a policy for more. The download and client-script endpoints are anonymous by design (see below). |
 | `AllowedWorkspaceIds` | empty | Rejects other workspaces (403) before any Power BI call. With the default authorizer, an empty list rejects everything; with your own authorizer, an empty list skips this check. |
 | `IVisualExportAuthorizer` | the allow-list only | Your per-user decision, given the resolved workspace, report, dataset, page and visual names and IDs. |
-| `Export:FieldValidation` | `Strict` | Only fields of the visual *as saved in the published report* can be exported, so a caller can't request other columns of the model (403). |
+| `Export:FieldValidation` | `Strict` | Only fields of the visual *as saved in the published report* can be exported, so a caller can't request other columns of the model (403). A visual bound to a field parameter can also export any field in the parameter. |
 | `IEffectiveIdentityProvider` | none | Runs the query as the user (RLS) instead of the module's identity. |
 | Concurrency limits | 2 per user | More than that returns 429. |
 
@@ -323,7 +323,7 @@ Section `PbiVisualExport` (environment variables use `__`, for example
 | `Credential:Username` / `Password` | | `MasterUser`. |
 | `Credential:XmlaMode` | `Auto` | `Auto`: device code when `Mode` is `AzureCli`, or `DeviceCode` without a `ClientId`; else `Shared`. `Shared`: the main credential. `DeviceCode`: always (dev). Ignored when the host calls `UseCredential`. |
 | `Credential:XmlaClientId` | `cf710c6e-…` | The public client for XMLA device-code sign-in: Microsoft's Analysis Services client, the same in every tenant. |
-| `Export:FieldValidation` | `Strict` | `Strict`: fields must be in the visual's saved PBIR definition, and PBIR-Legacy reports are refused. `PbirOnly`: PBIR-Legacy reports are exported unchecked. `Off`: trust the request. |
+| `Export:FieldValidation` | `Strict` | `Strict`: fields must be in the visual's saved PBIR definition (or, for a visual bound to a field parameter, in the parameter), and PBIR-Legacy reports are refused. `PbirOnly`: PBIR-Legacy reports are exported unchecked. `Off`: trust the request. |
 | `Export:MaxRows` | `0` | An exact cap on rows, where 0 means unlimited. The query uses `TOPN`, and the CSV stops at N rows (rows tied at the cut are dropped). |
 | `Export:CommandTimeoutSeconds` | `0` | The XMLA command timeout, where 0 means none. |
 | `Export:ValidateParameterValues` | `true` | Rejects (400) a filter that would set a dynamic M query parameter to a value missing from its bound column. Power BI passes such values to the source unchecked; `false` does the same. The model's own select-all value isn't checked. |
@@ -436,7 +436,8 @@ silently truncated file.
     card sets the binding's `selectAllValue`. Date and date-time parameters are set as
     `DATE(…)` / `DATE(…) + TIME(…)`, like Power BI; M receives a datetime either way,
     so a model that needs a date should use `DateTime.Date(param)`.
-  - field parameters (the visual's selected columns are exported)
+  - field parameters (the visual's selected columns are exported; field validation
+    accepts any field in the parameter, read from the model)
   - any filter the export can't translate stops it (400) rather than being dropped,
     which would export rows the visual excludes: an unsupported condition or
     operator (e.g. `Between`), and a value or Top N filter

@@ -135,7 +135,8 @@ internal sealed class CsvExportService
     ///
     /// Unless <see cref="ExportOptions.FieldValidation"/> is Off, the report definition is
     /// loaded (cached) and the requested fields are checked against the visual's saved
-    /// definition first (<see cref="VisualFieldValidator"/>); a refusal throws an
+    /// definition first (<see cref="VisualFieldValidator"/>), and for a visual bound to a
+    /// field parameter, against the parameter's fields in the model; a refusal throws an
     /// <see cref="ExportRequestException"/> with its status code (403 / 400).
     ///
     /// A measure the model doesn't have may be a report-level measure: then the report's
@@ -151,18 +152,22 @@ internal sealed class CsvExportService
         var reportId = Guid.Parse(request.ReportId!);
         TimeSpan? refreshAge = _cacheOptions.RefreshOnMissSeconds > 0 ? TimeSpan.FromSeconds(_cacheOptions.RefreshOnMissSeconds) : null;
 
+        var model = await _metadata.GetModelAsync(workspaceId, datasetId, maxAge: null, ct);
         ReportDefinition? report = null;
         IReadOnlyList<string> validationWarnings = Array.Empty<string>();
         if (_export.FieldValidation != FieldValidationMode.Off)
         {
             report = await _reports.GetAsync(workspaceId, reportId, maxAge: null, ct);
-            var check = VisualFieldValidator.Validate(request, report, _export.FieldValidation);
+            var check = VisualFieldValidator.Validate(request, report, _export.FieldValidation, model);
             if (check.Stale && refreshAge is { } age)
             {
-                _log.LogInformation("Visual {Visual} or its fields not in the cached report definition; refreshing it if older than {MaxAge}",
+                _log.LogInformation("Visual {Visual} or its fields not in the cached definitions; refreshing them if older than {MaxAge}",
                     request.VisualName, age);
                 report = await _reports.GetAsync(workspaceId, reportId, age, ct);
-                check = VisualFieldValidator.Validate(request, report, _export.FieldValidation);
+                // A field parameter's fields are defined in the model.
+                if (report.FindVisual(request.PageName!, request.VisualName!) is { FieldParameterColumns.Count: > 0 })
+                    model = await _metadata.GetModelAsync(workspaceId, datasetId, age, ct);
+                check = VisualFieldValidator.Validate(request, report, _export.FieldValidation, model);
             }
             if (check.Error is not null)
             {
@@ -176,7 +181,6 @@ internal sealed class CsvExportService
             validationWarnings = check.Warnings;
         }
 
-        var model = await _metadata.GetModelAsync(workspaceId, datasetId, maxAge: null, ct);
         var unresolved = DaxQueryBuilder.FindUnresolvedFields(request, model);
         if (unresolved.Count == 0) return _builder.Build(request, model, report, validationWarnings);
 
